@@ -47,16 +47,12 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return err
 	}
 
-	result, err := adapter.Import(ctx, sourcePath)
+	bundle, err := adapter.Import(ctx, sourcePath)
 	if err != nil {
 		return fmt.Errorf("import %s session: %w", adapter.Name(), err)
 	}
-	bundle := session.Bundle{
-		FormatVersion: session.CurrentFormatVersion,
-		Source:        session.Source{Path: sourcePath},
-		Session:       result,
-		RawRecords:    result.RawRecords,
-	}
+	bundle.FormatVersion = session.CurrentFormatVersion
+	bundle.Source = session.Source{Path: sourcePath}
 
 	outputPath := *output
 	if outputPath == "" {
@@ -74,7 +70,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("close output: %w", err)
 	}
 
-	fmt.Fprintf(stdout, "exported %d events to %s\n", len(result.Events), outputPath)
+	fmt.Fprintf(stdout, "exported %d events to %s\n", len(bundle.Session.Events), outputPath)
 	return nil
 }
 

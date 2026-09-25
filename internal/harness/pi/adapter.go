@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -21,88 +22,159 @@ func (Adapter) Detect(path string) bool {
 	return strings.HasSuffix(path, ".jsonl") && strings.Contains(filepath.ToSlash(path), "/.pi/")
 }
 
-func (Adapter) Import(ctx context.Context, path string) (session.Session, error) {
-	result := session.Session{Harness: "pi"}
-	first := true
+// entry is one Pi JSONL line. Fields a given entry type does not use stay empty.
+type entry struct {
+	Type      string   `json:"type"`
+	ID        string   `json:"id"`
+	ParentID  string   `json:"parentId"`
+	Timestamp string   `json:"timestamp"`
+	CWD       string   `json:"cwd"`     // session header
+	Summary   string   `json:"summary"` // compaction, branch_summary
+	Message   *message `json:"message"` // message
+}
 
-	err := jsonl.Read(ctx, path, func(line int, value map[string]any) error {
-		result.RawRecords = append(result.RawRecords, session.RawLine{Line: line, Record: value})
-		typeName := jsonl.String(value["type"])
-		if first {
-			if typeName != "session" {
-				return fmt.Errorf("expected session header, found %q", typeName)
+type message struct {
+	Role       string          `json:"role"`    // user | assistant | system | toolResult
+	Content    json.RawMessage `json:"content"` // string or []block
+	Model      string          `json:"model"`
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	IsError    bool            `json:"isError"`
+}
+
+type block struct {
+	Type      string          `json:"type"` // text | thinking | toolCall | image
+	Text      string          `json:"text"`
+	Thinking  string          `json:"thinking"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) {
+	bundle := session.Bundle{Session: session.Session{Harness: "pi"}}
+	s := &bundle.Session
+	// One Pi entry with N blocks becomes N events, but later entries point at
+	// the entry ID. Remember which event ended each entry.
+	lastEvent := map[string]string{}
+
+	err := jsonl.Read(ctx, path, func(line jsonl.Line) error {
+		bundle.RawRecords = append(bundle.RawRecords, session.RawLine{Line: line.Number, Record: string(line.Raw)})
+
+		var e entry
+		if err := json.Unmarshal(line.Raw, &e); err != nil {
+			return fmt.Errorf("decode entry: %w", err)
+		}
+		if len(bundle.RawRecords) == 1 {
+			if e.Type != "session" {
+				return fmt.Errorf("expected session header, found %q", e.Type)
 			}
-			result.ID = jsonl.String(value["id"])
-			result.CreatedAt = harness.ParseTime(value["timestamp"])
-			result.Workspace = jsonl.String(value["cwd"])
-			first = false
+			s.ID, s.Workspace = e.ID, e.CWD
+			s.CreatedAt = harness.ParseTime(e.Timestamp)
 			return nil
 		}
 
-		created := harness.ParseTime(value["timestamp"])
-		event := session.Event{ID: jsonl.String(value["id"]), CreatedAt: created, Raw: value}
-		switch typeName {
+		base := session.Event{
+			ID:        e.ID,
+			ParentID:  lastEvent[e.ParentID],
+			CreatedAt: harness.ParseTime(e.Timestamp),
+			RawLine:   line.Number,
+		}
+		var events []session.Event
+		switch e.Type {
 		case "message":
-			message := jsonl.Map(value["message"])
-			role := jsonl.String(message["role"])
-			blocks := jsonl.Slice(message["content"])
-			if len(blocks) == 0 {
-				blocks = []any{message["content"]}
-			}
-			for index, blockValue := range blocks {
-				block := jsonl.Map(blockValue)
-				blockType := jsonl.String(block["type"])
-				item := event
-				item.ID = fmt.Sprintf("%s-%d", event.ID, index)
-				item.Role = role
-				if text, ok := blockValue.(string); ok {
-					item.Type = session.EventMessage
-					item.Content = text
-					result.Events = append(result.Events, item)
-					continue
+			if e.Message != nil {
+				var err error
+				if events, err = messageEvents(base, *e.Message); err != nil {
+					return err
 				}
-				switch blockType {
-				case "text", "thinking":
-					item.Type = session.EventMessage
-					item.Content = jsonl.String(block["text"])
-				case "toolCall":
-					item.Type = session.EventToolCall
-					item.Tool = &session.ToolEvent{ID: jsonl.String(block["id"]), Name: jsonl.String(block["name"]), Arguments: fmt.Sprintf("%v", block["arguments"])}
-				case "toolResult":
-					item.Type = session.EventToolResult
-					item.Tool = &session.ToolEvent{ID: jsonl.String(block["toolCallId"]), Name: jsonl.String(block["toolName"]), Output: contentText(block["content"]), IsError: block["isError"] == true}
-				default:
-					continue
-				}
-				result.Events = append(result.Events, item)
 			}
 		case "compaction", "branch_summary":
-			event.Type = session.EventSummary
-			event.Content = jsonl.String(value["summary"])
-			result.Events = append(result.Events, event)
-		default:
-			return nil // Preserve unsupported entries in the raw transcript, not the timeline.
+			base.Type, base.Text = session.EventSummary, e.Summary
+			events = []session.Event{base}
 		}
+		// Entries outside the timeline (model_change, custom, ...) stay in
+		// RawRecords; their children attach to the nearest timeline ancestor.
+		if len(events) > 0 {
+			lastEvent[e.ID] = events[len(events)-1].ID
+		} else {
+			lastEvent[e.ID] = base.ParentID
+		}
+		s.Events = append(s.Events, events...)
 		return nil
 	})
 	if err != nil {
-		return session.Session{}, err
+		return session.Bundle{}, err
 	}
-	if result.CreatedAt.IsZero() {
-		result.CreatedAt = time.Now()
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = time.Now()
 	}
-	return result, nil
+	return bundle, nil
 }
 
-func contentText(value any) string {
-	if text, ok := value.(string); ok {
-		return text
+func messageEvents(base session.Event, m message) ([]session.Event, error) {
+	blocks, err := decodeContent(m.Content)
+	if err != nil {
+		return nil, err
 	}
+
+	if m.Role == "toolResult" {
+		base.Type, base.Role = session.EventToolResult, session.RoleTool
+		base.Result = &session.ToolResult{CallID: m.ToolCallID, Name: m.ToolName, Output: joinText(blocks), IsError: m.IsError}
+		return []session.Event{base}, nil
+	}
+
+	base.Role, base.Model = session.Role(m.Role), m.Model
+	events := make([]session.Event, 0, len(blocks))
+	for i, b := range blocks {
+		event := base
+		event.ID = fmt.Sprintf("%s-%d", base.ID, i)
+		if len(events) > 0 {
+			event.ParentID = events[len(events)-1].ID // chain blocks in order
+		}
+		switch b.Type {
+		case "text":
+			if b.Text == "" {
+				continue
+			}
+			event.Type, event.Text = session.EventMessage, b.Text
+		case "thinking":
+			if b.Thinking == "" {
+				continue
+			}
+			event.Type, event.Text = session.EventReasoning, b.Thinking
+		case "toolCall":
+			event.Type = session.EventToolCall
+			event.Call = &session.ToolCall{ID: b.ID, Name: b.Name, Args: b.Arguments}
+		default:
+			continue // Images are kept in RawRecords until assets are supported.
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+// decodeContent accepts Pi's two content shapes: a plain string or a block list.
+func decodeContent(raw json.RawMessage) ([]block, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return []block{{Type: "text", Text: text}}, nil
+	}
+	var blocks []block
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil, fmt.Errorf("decode content: %w", err)
+	}
+	return blocks, nil
+}
+
+func joinText(blocks []block) string {
 	var parts []string
-	for _, item := range jsonl.Slice(value) {
-		block := jsonl.Map(item)
-		if text := jsonl.String(block["text"]); text != "" {
-			parts = append(parts, text)
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
 		}
 	}
 	return strings.Join(parts, "\n")

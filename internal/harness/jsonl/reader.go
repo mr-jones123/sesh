@@ -9,8 +9,14 @@ import (
 	"os"
 )
 
+// Line is one non-empty JSONL line, byte-for-byte as it appeared on disk.
+type Line struct {
+	Number int
+	Raw    json.RawMessage
+}
+
 // Read opens a JSONL file and calls fn once for every non-empty line.
-func Read(ctx context.Context, path string, fn func(int, map[string]any) error) error {
+func Read(ctx context.Context, path string, fn func(Line) error) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open transcript: %w", err)
@@ -20,46 +26,33 @@ func Read(ctx context.Context, path string, fn func(int, map[string]any) error) 
 	return ReadReader(ctx, file, fn)
 }
 
-func ReadReader(ctx context.Context, reader io.Reader, fn func(int, map[string]any) error) error {
+func ReadReader(ctx context.Context, reader io.Reader, fn func(Line) error) error {
 	scanner := bufio.NewScanner(reader)
 	// Tool output can be large. The default Scanner limit is only 64 KiB.
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
-	line := 0
+	number := 0
 	for scanner.Scan() {
-		line++
+		number++
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if len(scanner.Bytes()) == 0 {
+		bytes := scanner.Bytes()
+		if len(bytes) == 0 {
 			continue
 		}
-
-		var value map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &value); err != nil {
-			return fmt.Errorf("line %d: invalid JSON: %w", line, err)
+		if !json.Valid(bytes) {
+			return fmt.Errorf("line %d: invalid JSON", number)
 		}
-		if err := fn(line, value); err != nil {
-			return fmt.Errorf("line %d: %w", line, err)
+		// Scanner overwrites this buffer on the next Scan, so keep a copy.
+		raw := make(json.RawMessage, len(bytes))
+		copy(raw, bytes)
+		if err := fn(Line{Number: number, Raw: raw}); err != nil {
+			return fmt.Errorf("line %d: %w", number, err)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
 	return nil
-}
-
-func String(value any) string {
-	text, _ := value.(string)
-	return text
-}
-
-func Map(value any) map[string]any {
-	result, _ := value.(map[string]any)
-	return result
-}
-
-func Slice(value any) []any {
-	result, _ := value.([]any)
-	return result
 }

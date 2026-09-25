@@ -1,45 +1,67 @@
 package session
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
-const CurrentFormatVersion = 1
+// CurrentFormatVersion 2 splits tool calls from results and stores raw lines
+// verbatim. Version 1 bundles must be re-exported from their source.
+const CurrentFormatVersion = 2
 
 type Session struct {
-	ID         string    `json:"id"`
-	Title      string    `json:"title,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	Harness    string    `json:"harness"`
-	Workspace  string    `json:"workspace,omitempty"`
-	Events     []Event   `json:"events"`
-	RawRecords []RawLine `json:"-"`
+	ID        string    `json:"id"`
+	Title     string    `json:"title,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	Harness   string    `json:"harness"`
+	Workspace string    `json:"workspace,omitempty"`
+	Events    []Event   `json:"events"`
 }
 
 type Event struct {
-	ID        string         `json:"id,omitempty"`
-	ParentID  string         `json:"parent_id,omitempty"`
-	Type      EventType      `json:"type"`
-	Role      string         `json:"role,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	Content   string         `json:"content,omitempty"`
-	Tool      *ToolEvent     `json:"tool,omitempty"`
-	Raw       map[string]any `json:"raw,omitempty"`
+	ID        string      `json:"id"`
+	ParentID  string      `json:"parent_id,omitempty"`
+	Type      EventType   `json:"type"`
+	Role      Role        `json:"role,omitempty"`
+	CreatedAt time.Time   `json:"created_at"`
+	Model     string      `json:"model,omitempty"`
+	Text      string      `json:"text,omitempty"`
+	Call      *ToolCall   `json:"call,omitempty"`
+	Result    *ToolResult `json:"result,omitempty"`
+	// RawLine is the source line number in Bundle.RawRecords, not a copy.
+	RawLine int `json:"raw_line,omitempty"`
 }
 
 type EventType string
 
 const (
 	EventMessage    EventType = "message"
+	EventReasoning  EventType = "reasoning"
 	EventToolCall   EventType = "tool_call"
 	EventToolResult EventType = "tool_result"
 	EventSummary    EventType = "summary"
 )
 
-type ToolEvent struct {
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
+type Role string
+
+const (
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+	RoleSystem    Role = "system"
+	RoleTool      Role = "tool"
+)
+
+type ToolCall struct {
+	ID   string          `json:"id"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+type ToolResult struct {
+	CallID  string `json:"call_id"`
+	Name    string `json:"name,omitempty"`
+	Output  string `json:"output,omitempty"`
+	IsError bool   `json:"is_error,omitempty"`
 }
 
 type Source struct {
@@ -56,7 +78,10 @@ type Bundle struct {
 	RawRecords    []RawLine `json:"raw_records,omitempty"`
 }
 
+// RawLine keeps one source line verbatim. Record is a string, not
+// json.RawMessage: encoding/json re-indents and escapes embedded raw JSON,
+// while a JSON string decodes back to the exact original bytes.
 type RawLine struct {
-	Line   int            `json:"line"`
-	Record map[string]any `json:"record"`
+	Line   int    `json:"line"`
+	Record string `json:"record"`
 }
