@@ -131,7 +131,7 @@ func parseCodex(name string, args json.RawMessage) Action {
 			return other
 		}
 		if a.Workdir != "" && a.Cmd != "" {
-			return exec("cd " + shellQuote(a.Workdir) + " && " + a.Cmd)
+			return exec("cd " + ShellQuote(a.Workdir) + " && " + a.Cmd)
 		}
 		return exec(a.Cmd)
 	case "shell":
@@ -148,7 +148,7 @@ func parseCodex(name string, args json.RawMessage) Action {
 			command = a.Command[2]
 		}
 		if a.Workdir != "" && command != "" {
-			command = "cd " + shellQuote(a.Workdir) + " && " + command
+			command = "cd " + ShellQuote(a.Workdir) + " && " + command
 		}
 		return exec(command)
 	case "apply_patch":
@@ -259,6 +259,7 @@ func edit(path string, edits []Edit) Action {
 	return Action{Kind: KindEdit, Path: path, Edits: edits}
 }
 
-func shellQuote(value string) string {
+// ShellQuote quotes value for a POSIX shell.
+func ShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

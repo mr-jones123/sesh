@@ -12,6 +12,7 @@ import (
 	"github.com/mr-jones123/sesh/internal/harness"
 	"github.com/mr-jones123/sesh/internal/session"
 	"github.com/mr-jones123/sesh/internal/tools"
+	"github.com/mr-jones123/sesh/internal/turns"
 )
 
 // Imported assistant messages name this provider so Pi never treats them as
@@ -21,14 +22,14 @@ const importedProvider = "sesh"
 
 // Export writes bundle as a Pi session (format version 3). A Pi bundle with no
 // overrides is copied back byte-for-byte; every other bundle is rebuilt from
-// its neutral events along the active branch.
+// its turns along the active branch.
 func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.ExportOptions, w io.Writer) error {
 	provider, modelID, err := splitModel(opts.Model)
 	if err != nil {
 		return err
 	}
 	out := bufio.NewWriter(w)
-	if bundle.Session.Harness == "pi" && opts == (harness.ExportOptions{}) && len(bundle.RawRecords) > 0 {
+	if bundle.Session.Harness == "pi" && opts.Model == "" && opts.Workspace == "" && len(bundle.RawRecords) > 0 {
 		for _, raw := range bundle.RawRecords {
 			if _, err := out.WriteString(raw.Record + "\n"); err != nil {
 				return err
@@ -37,16 +38,8 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 		return out.Flush()
 	}
 
-	e := &exporter{
-		enc:       json.NewEncoder(out),
-		source:    bundle.Session,
-		mapped:    map[string]string{},
-		unmapped:  map[string]*deferredCall{},
-		pending:   map[string]bool{},
-		startedAt: bundle.Session.CreatedAt,
-	}
+	e := &writer{enc: json.NewEncoder(out), source: bundle.Session.Harness, start: bundle.Session.CreatedAt}
 	e.enc.SetEscapeHTML(false)
-
 	workspace := opts.Workspace
 	if workspace == "" {
 		workspace = bundle.Session.Workspace
@@ -55,19 +48,18 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 		Type:      "session",
 		Version:   3,
 		ID:        fmt.Sprintf("sesh-%s-%s", bundle.Session.Harness, bundle.Session.ID),
-		Timestamp: timestamp(e.startedAt),
+		Timestamp: timestamp(e.start),
 		CWD:       workspace,
 	})
-	for _, event := range activeBranch(bundle.Session.Events) {
+	for _, turn := range turns.Build(bundle.Session, supported) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		e.add(event)
+		e.turn(turn)
 	}
-	e.flushTurn()
 	if provider != "" {
 		// Pi resumes with the last model named on the branch, so this goes last.
-		e.write(modelChangeEntry{entryHead: e.nextHead("model_change", e.startedAt), Provider: provider, ModelID: modelID})
+		e.write(modelChangeEntry{entryHead: e.nextHead("model_change", e.start), Provider: provider, ModelID: modelID})
 	}
 	if e.err != nil {
 		return e.err
@@ -86,207 +78,82 @@ func splitModel(model string) (provider, id string, err error) {
 	return provider, id, nil
 }
 
-// activeBranch returns the path from the root to the last event. Branches
-// the source abandoned (rewinds, edits) are left out, as Pi would.
-func activeBranch(events []session.Event) []session.Event {
-	if len(events) == 0 {
-		return nil
-	}
-	index := make(map[string]int, len(events))
-	for i, event := range events {
-		index[event.ID] = i
-	}
-	var path []session.Event
-	// Walk parent links from the last event; the length check stops a
-	// malformed cycle.
-	for i := len(events) - 1; len(path) < len(events); {
-		path = append(path, events[i])
-		parent, ok := index[events[i].ParentID]
-		if !ok {
-			break
+func supported(action tools.Action) bool {
+	_, _, ok := piTool(action)
+	return ok
+}
+
+// writer emits Pi entries, each chained to the previous one.
+type writer struct {
+	enc    *json.Encoder
+	err    error
+	source string // source harness, named in text-rendered calls
+	start  time.Time
+	nextID int
+	parent *string
+}
+
+// turn writes one turn. An assistant turn becomes the assistant message, a
+// toolResult per answered call, then one text message for calls Pi has no
+// tool for. Calls left unanswered in the source get Pi's own
+// "No result provided" when the session is resumed.
+func (e *writer) turn(t turns.Turn) {
+	switch t.Kind {
+	case turns.User:
+		e.writeMessage(t.At, userMessage{Role: "user", Content: []outBlock{{Type: "text", Text: t.Text}}, Timestamp: t.At.UnixMilli()})
+	case turns.Summary:
+		text := "The conversation before this point was summarized:\n\n" + t.Text
+		e.writeMessage(t.At, userMessage{Role: "user", Content: []outBlock{{Type: "text", Text: text}}, Timestamp: t.At.UnixMilli()})
+	case turns.Assistant:
+		msg := e.assistant(t.At, t.Model)
+		names := map[string]string{} // call ID -> Pi tool name
+		for _, b := range t.Blocks {
+			switch b.Kind {
+			case turns.Text:
+				msg.Content = append(msg.Content, outBlock{Type: "text", Text: b.Text})
+			case turns.Reasoning:
+				msg.Content = append(msg.Content, outBlock{Type: "thinking", Thinking: b.Text})
+			case turns.Call:
+				name, args, _ := piTool(b.Action) // supported() admitted only mappable calls
+				names[b.CallID] = name
+				msg.Content = append(msg.Content, outBlock{Type: "toolCall", ID: b.CallID, Name: name, Arguments: args})
+				msg.StopReason = "toolUse"
+			}
 		}
-		i = parent
-	}
-	for left, right := 0, len(path)-1; left < right; left, right = left+1, right-1 {
-		path[left], path[right] = path[right], path[left]
-	}
-	return path
-}
-
-// exporter turns neutral events into Pi entries. Pi pairs each assistant
-// tool call with a tool result that must follow the message directly, but
-// Claude streams parallel calls and results interleaved (call A, call B,
-// result A, call C, ...). So a turn is buffered: assistant events merge into
-// one message while any of its calls is unanswered, results are held until
-// the turn ends, and calls without a Pi equivalent are written as text after
-// the results.
-type exporter struct {
-	enc       *json.Encoder
-	err       error
-	source    session.Session
-	startedAt time.Time
-	nextID    int
-	parent    *string
-
-	assistant *assistantMessage // open assistant message of the turn
-	results   []timedResult     // results for its tool calls, in arrival order
-	deferred  []*deferredCall   // calls written as text after the results
-	pending   map[string]bool   // calls of the turn still waiting for a result
-	sawResult bool              // the turn has entered its tool-result phase
-
-	mapped   map[string]string        // call ID -> Pi tool name
-	unmapped map[string]*deferredCall // call ID -> call written as text
-}
-
-type timedResult struct {
-	at      time.Time
-	message toolResultMessage
-}
-
-type deferredCall struct {
-	name, args, output string
-	isError, done      bool
-	at                 time.Time
-}
-
-func (e *exporter) add(event session.Event) {
-	at := event.CreatedAt
-	if at.IsZero() {
-		at = e.startedAt
-	}
-	switch event.Type {
-	case session.EventMessage:
-		switch event.Role {
-		case session.RoleUser:
-			e.flushTurn()
-			e.writeMessage(at, userMessage{Role: "user", Content: []outBlock{{Type: "text", Text: event.Text}}, Timestamp: at.UnixMilli()})
-		case session.RoleAssistant:
-			msg := e.assistantEvent(event, at)
-			msg.Content = append(msg.Content, outBlock{Type: "text", Text: event.Text})
+		if len(msg.Content) > 0 {
+			e.writeMessage(t.At, msg)
 		}
-		// System context (Codex developer messages, Pi system prompts) belongs
-		// to the source harness; Pi supplies its own.
-	case session.EventReasoning:
-		msg := e.assistantEvent(event, at)
-		msg.Content = append(msg.Content, outBlock{Type: "thinking", Thinking: event.Text})
-	case session.EventToolCall:
-		e.addCall(event, at)
-	case session.EventToolResult:
-		e.addResult(event, at)
-	case session.EventSummary:
-		e.flushTurn()
-		text := "The conversation before this point was summarized:\n\n" + event.Text
-		e.writeMessage(at, userMessage{Role: "user", Content: []outBlock{{Type: "text", Text: text}}, Timestamp: at.UnixMilli()})
-	}
-}
-
-// assistantEvent returns the message an assistant event belongs to. Output
-// after all of a turn's results starts a new turn; output while calls are
-// still unanswered is part of the same streamed response.
-func (e *exporter) assistantEvent(event session.Event, at time.Time) *assistantMessage {
-	if e.sawResult && len(e.pending) == 0 {
-		e.flushTurn()
-	}
-	if e.assistant == nil {
-		model := event.Model
-		if model == "" {
-			model = e.source.Harness
+		for _, r := range t.Results {
+			e.writeMessage(r.At, toolResultMessage{
+				Role:       "toolResult",
+				ToolCallID: r.CallID,
+				ToolName:   names[r.CallID],
+				Content:    []outBlock{{Type: "text", Text: r.Output}},
+				IsError:    r.IsError,
+				Timestamp:  r.At.UnixMilli(),
+			})
 		}
-		e.assistant = &assistantMessage{
-			Role:       "assistant",
-			API:        importedProvider,
-			Provider:   importedProvider,
-			Model:      model,
-			StopReason: "stop",
-			Timestamp:  at.UnixMilli(),
-			at:         at,
+		if len(t.Unmapped) > 0 {
+			at := t.Unmapped[0].At
+			text := e.assistant(at, "")
+			text.Content = []outBlock{{Type: "text", Text: turns.UnmappedText(e.source, t.Unmapped)}}
+			e.writeMessage(at, text)
 		}
 	}
-	return e.assistant
 }
 
-func (e *exporter) addCall(event session.Event, at time.Time) {
-	call := event.Call
-	msg := e.assistantEvent(event, at)
-	e.pending[call.ID] = true
-	name, args, ok := piTool(tools.Parse(e.source.Harness, call.Name, call.Args))
-	if !ok {
-		d := &deferredCall{name: call.Name, args: string(call.Args), at: at}
-		e.unmapped[call.ID] = d
-		e.deferred = append(e.deferred, d)
-		return
+func (e *writer) assistant(at time.Time, model string) *assistantMessage {
+	if model == "" {
+		model = e.source
 	}
-	e.mapped[call.ID] = name
-	msg.Content = append(msg.Content, outBlock{Type: "toolCall", ID: call.ID, Name: name, Arguments: args})
-	msg.StopReason = "toolUse"
-}
-
-func (e *exporter) addResult(event session.Event, at time.Time) {
-	result := event.Result
-	e.sawResult = true
-	delete(e.pending, result.CallID)
-	if name, ok := e.mapped[result.CallID]; ok {
-		e.results = append(e.results, timedResult{at: at, message: toolResultMessage{
-			Role:       "toolResult",
-			ToolCallID: result.CallID,
-			ToolName:   name,
-			Content:    []outBlock{{Type: "text", Text: result.Output}},
-			IsError:    result.IsError,
-			Timestamp:  at.UnixMilli(),
-		}})
-		return
-	}
-	d, ok := e.unmapped[result.CallID]
-	if !ok { // a result whose call is not on the exported branch
-		d = &deferredCall{name: result.Name, at: at}
-		e.deferred = append(e.deferred, d)
-	}
-	d.output, d.isError, d.done = result.Output, result.IsError, true
-}
-
-// flushTurn writes the open turn: the assistant message, its tool results,
-// then text for calls Pi has no tool for. Calls still pending were never
-// answered in the source; Pi fills those in as "No result provided".
-func (e *exporter) flushTurn() {
-	if e.assistant != nil && len(e.assistant.Content) > 0 {
-		e.writeMessage(e.assistant.at, e.assistant)
-	}
-	for _, r := range e.results {
-		e.writeMessage(r.at, r.message)
-	}
-	if len(e.deferred) > 0 {
-		e.writeDeferred()
-	}
-	e.assistant, e.results, e.deferred, e.sawResult = nil, nil, nil, false
-	clear(e.pending)
-}
-
-func (e *exporter) writeDeferred() {
-	var text strings.Builder
-	for i, d := range e.deferred {
-		if i > 0 {
-			text.WriteString("\n\n")
-		}
-		fmt.Fprintf(&text, "[Tool call from %s: %s]\n%s", e.source.Harness, d.name, d.args)
-		switch {
-		case !d.done:
-			text.WriteString("\n\n(no result recorded)")
-		case d.isError:
-			fmt.Fprintf(&text, "\n\nResult (error):\n%s", d.output)
-		default:
-			fmt.Fprintf(&text, "\n\nResult:\n%s", d.output)
-		}
-	}
-	at := e.deferred[0].at
-	e.writeMessage(at, &assistantMessage{
+	return &assistantMessage{
 		Role:       "assistant",
-		Content:    []outBlock{{Type: "text", Text: text.String()}},
 		API:        importedProvider,
 		Provider:   importedProvider,
-		Model:      e.source.Harness,
+		Model:      model,
 		StopReason: "stop",
 		Timestamp:  at.UnixMilli(),
-	})
+	}
 }
 
 // piTool renders an action as the matching Pi built-in tool.
@@ -328,13 +195,13 @@ func piTool(action tools.Action) (name string, args json.RawMessage, ok bool) {
 	return name, args, err == nil
 }
 
-func (e *exporter) writeMessage(at time.Time, message any) {
+func (e *writer) writeMessage(at time.Time, message any) {
 	e.write(messageEntry{entryHead: e.nextHead("message", at), Message: message})
 }
 
 // nextHead allocates the next entry, chained to the previous one. Entry IDs
 // are sequential, so converting the same bundle twice gives the same file.
-func (e *exporter) nextHead(kind string, at time.Time) entryHead {
+func (e *writer) nextHead(kind string, at time.Time) entryHead {
 	e.nextID++
 	id := fmt.Sprintf("%08x", e.nextID)
 	head := entryHead{Type: kind, ID: id, ParentID: e.parent, Timestamp: timestamp(at)}
@@ -344,7 +211,7 @@ func (e *exporter) nextHead(kind string, at time.Time) entryHead {
 
 // write encodes one JSONL line. The first error sticks and later writes are
 // skipped, so callers check e.err once at the end.
-func (e *exporter) write(value any) {
+func (e *writer) write(value any) {
 	if e.err != nil {
 		return
 	}
@@ -408,7 +275,6 @@ type assistantMessage struct {
 	Usage      usage      `json:"usage"`
 	StopReason string     `json:"stopReason"`
 	Timestamp  int64      `json:"timestamp"`
-	at         time.Time
 }
 
 type toolResultMessage struct {

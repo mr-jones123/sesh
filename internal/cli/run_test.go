@@ -14,7 +14,7 @@ func TestRunWithoutArgumentsPrintsHelp(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	err := Run(context.Background(), nil, &stdout, &stderr)
+	err := Run(context.Background(), nil, nil, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -30,7 +30,7 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	err := Run(context.Background(), []string{"unknown"}, &stdout, &stderr)
+	err := Run(context.Background(), []string{"unknown"}, nil, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("Run() error = %v, want unknown command error", err)
 	}
@@ -47,7 +47,7 @@ func TestRunInspect(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := Run(context.Background(), []string{"inspect", path}, &stdout, &stderr)
+	err := Run(context.Background(), []string{"inspect", path}, nil, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("Run() error = %v; stderr = %q", err, stderr.String())
 	}
@@ -63,7 +63,7 @@ func TestRunInspectPrintsNormalizedJSON(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := Run(context.Background(), []string{"inspect", "-json", path}, &stdout, &bytes.Buffer{})
+	err := Run(context.Background(), []string{"inspect", "-json", path}, nil, &stdout, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestRunInspectRejectsMultipleJSONValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := Run(context.Background(), []string{"inspect", path}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := Run(context.Background(), []string{"inspect", path}, nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "more than one JSON value") {
 		t.Fatalf("Run() error = %v, want multiple value error", err)
 	}
@@ -96,7 +96,7 @@ func TestRunExportAndImport(t *testing.T) {
 	}
 
 	var exported bytes.Buffer
-	if err := Run(context.Background(), []string{"export", "--harness", "pi", "-output", output, source}, &exported, &bytes.Buffer{}); err != nil {
+	if err := Run(context.Background(), []string{"export", "--harness", "pi", "-output", output, source}, nil, &exported, &bytes.Buffer{}); err != nil {
 		t.Fatalf("export error = %v", err)
 	}
 	if _, err := os.Stat(output); err != nil {
@@ -104,7 +104,7 @@ func TestRunExportAndImport(t *testing.T) {
 	}
 
 	var imported bytes.Buffer
-	if err := Run(context.Background(), []string{"import", output}, &imported, &bytes.Buffer{}); err != nil {
+	if err := Run(context.Background(), []string{"import", output}, nil, &imported, &bytes.Buffer{}); err != nil {
 		t.Fatalf("import error = %v", err)
 	}
 	if !strings.Contains(imported.String(), "session demo") || !strings.Contains(imported.String(), "raw records: 2") {
@@ -112,7 +112,10 @@ func TestRunExportAndImport(t *testing.T) {
 	}
 }
 
-func TestRunConvertClaudeBundleToPi(t *testing.T) {
+// exportClaudeFixture writes a two-message Claude transcript and exports it,
+// returning the directory and bundle path.
+func exportClaudeFixture(t *testing.T) (string, string) {
+	t.Helper()
 	directory := t.TempDir()
 	source := filepath.Join(directory, "claude.jsonl")
 	bundlePath := filepath.Join(directory, "claude.sesh.json")
@@ -122,12 +125,17 @@ func TestRunConvertClaudeBundleToPi(t *testing.T) {
 	if err := os.WriteFile(source, []byte(transcript), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run(context.Background(), []string{"export", "--harness", "claude", "-output", bundlePath, source}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+	if err := Run(context.Background(), []string{"export", "--harness", "claude", "-output", bundlePath, source}, nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("export error = %v", err)
 	}
+	return directory, bundlePath
+}
+
+func TestRunConvertClaudeBundleToPi(t *testing.T) {
+	directory, bundlePath := exportClaudeFixture(t)
 
 	var stdout bytes.Buffer
-	if err := Run(context.Background(), []string{"convert", "--target", "pi", "--model", "openai/gpt-x", bundlePath}, &stdout, &bytes.Buffer{}); err != nil {
+	if err := Run(context.Background(), []string{"convert", "--target", "pi", "--model", "openai/gpt-x", bundlePath}, nil, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatalf("convert error = %v", err)
 	}
 	output := filepath.Join(directory, "claude.pi.jsonl")
@@ -145,8 +153,55 @@ func TestRunConvertClaudeBundleToPi(t *testing.T) {
 	}
 }
 
+func TestRunConvertInstallsCodexSessionAfterConfirmation(t *testing.T) {
+	_, bundlePath := exportClaudeFixture(t)
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	sessions := func() []string {
+		found, _ := filepath.Glob(filepath.Join(home, "sessions", "*", "*", "*", "rollout-*.jsonl"))
+		return found
+	}
+
+	err := Run(context.Background(), []string{"convert", "--target", "codex", "--install", bundlePath}, strings.NewReader("n\n"), &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "cancelled") || len(sessions()) != 0 {
+		t.Fatalf("declined install: error = %v, sessions = %v", err, sessions())
+	}
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"convert", "--target", "codex", "--install", bundlePath}, strings.NewReader("y\n"), &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("install error = %v", err)
+	}
+	installed := sessions()
+	if len(installed) != 1 {
+		t.Fatalf("sessions = %v, want one", installed)
+	}
+	data, err := os.ReadFile(installed[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := strings.SplitN(string(data), "\n", 2)[0]
+	// The ID in the file name must match session_meta, since Codex finds
+	// sessions by the name.
+	id := strings.TrimSuffix(filepath.Base(installed[0]), ".jsonl")
+	id = id[len(id)-36:]
+	if !strings.Contains(first, `"type":"session_meta"`) || !strings.Contains(first, `"id":"`+id+`"`) {
+		t.Fatalf("installed %s starts with %s", installed[0], first)
+	}
+	if !strings.Contains(stdout.String(), "codex resume "+id) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunConvertRejectsInstallForPi(t *testing.T) {
+	_, bundlePath := exportClaudeFixture(t)
+	err := Run(context.Background(), []string{"convert", "--target", "pi", "--install", "--yes", bundlePath}, nil, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "opens session files directly") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestRunConvertRejectsUnknownTarget(t *testing.T) {
-	err := Run(context.Background(), []string{"convert", "--target", "vim", "x.sesh.json"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := Run(context.Background(), []string{"convert", "--target", "vim", "x.sesh.json"}, nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported target") {
 		t.Fatalf("error = %v", err)
 	}
@@ -156,7 +211,7 @@ func TestRunHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := Run(ctx, nil, &bytes.Buffer{}, &bytes.Buffer{})
+	err := Run(ctx, nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error = %v, want context canceled", err)
 	}

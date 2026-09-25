@@ -17,7 +17,7 @@ func Adapters() []harness.Adapter {
 // Exporters lists targets whose native transcripts sesh can write. A target
 // is added only after its output is verified against the real harness.
 func Exporters() []harness.Exporter {
-	return []harness.Exporter{pi.New()}
+	return []harness.Exporter{pi.New(), codex.New()}
 }
 
 func Find(name string) (harness.Adapter, error) {
@@ -35,7 +35,7 @@ func FindExporter(name string) (harness.Exporter, error) {
 			return exporter, nil
 		}
 	}
-	return nil, fmt.Errorf("unsupported target %q; supported: pi", name)
+	return nil, fmt.Errorf("unsupported target %q; supported: pi, codex", name)
 }
 
 func Detect(path string) (harness.Adapter, error) {

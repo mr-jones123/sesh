@@ -14,7 +14,7 @@ var Version = "dev"
 
 // Run is the CLI entry point. Arguments and output streams are passed in
 // instead of read globally, which keeps command parsing easy to test.
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -40,7 +40,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "import":
 		return runImport(ctx, args[1:], stdout, stderr)
 	case "convert":
-		return runConvert(ctx, args[1:], stdout, stderr)
+		return runConvert(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		printRootUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])

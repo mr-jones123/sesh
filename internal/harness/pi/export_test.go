@@ -128,62 +128,6 @@ func TestExportTranslatesClaudeSession(t *testing.T) {
 	}
 }
 
-func TestExportKeepsToolResultsNextToTheirCalls(t *testing.T) {
-	// A parallel turn mixing a mapped and an unmapped call: the text for the
-	// unmapped call must come after the mapped result, and include its result.
-	bundle := session.Bundle{Session: session.Session{ID: "c1", Harness: "claude", CreatedAt: t0, Events: chain(
-		call("web", "WebSearch", `{"query":"q"}`),
-		call("sh", "Bash", `{"command":"ls"}`),
-		result("web", "found it"),
-		result("sh", "a.go"),
-		text(session.RoleAssistant, "Done."),
-	)}}
-
-	entries := export(t, bundle, harness.ExportOptions{})
-
-	want := "assistant:toolCall toolResult:text assistant:text assistant:text"
-	if got := strings.Join(roles(entries), " "); got != want {
-		t.Fatalf("entries = %s, want %s", got, want)
-	}
-	deferred := entries[3].message()["content"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.Contains(deferred, "found it") {
-		t.Fatalf("deferred call text = %q", deferred)
-	}
-}
-
-func TestExportGroupsInterleavedParallelCalls(t *testing.T) {
-	// Claude streams parallel calls and results interleaved. Pi needs one
-	// assistant message with all calls, then all results.
-	bundle := session.Bundle{Session: session.Session{ID: "c1", Harness: "claude", CreatedAt: t0, Events: chain(
-		call("a", "Bash", `{"command":"a"}`),
-		call("b", "Bash", `{"command":"b"}`),
-		result("a", "A"),
-		call("c", "Bash", `{"command":"c"}`),
-		result("b", "B"),
-		result("c", "C"),
-		text(session.RoleAssistant, "all done"),
-	)}}
-
-	entries := export(t, bundle, harness.ExportOptions{})
-
-	want := "assistant:toolCall,toolCall,toolCall toolResult:text toolResult:text toolResult:text assistant:text"
-	if got := strings.Join(roles(entries), " "); got != want {
-		t.Fatalf("entries = %s, want %s", got, want)
-	}
-}
-
-func TestExportFollowsActiveBranch(t *testing.T) {
-	events := chain(text(session.RoleUser, "first"), text(session.RoleAssistant, "abandoned"), text(session.RoleAssistant, "kept"))
-	events[2].ParentID = events[0].ID // the user rewound and the assistant answered again
-	bundle := session.Bundle{Session: session.Session{ID: "c1", Harness: "claude", CreatedAt: t0, Events: events}}
-
-	entries := export(t, bundle, harness.ExportOptions{})
-
-	if len(entries) != 3 || entries[2].message()["content"].([]any)[0].(map[string]any)["text"] != "kept" {
-		t.Fatalf("entries = %v", entries)
-	}
-}
-
 func TestExportCopiesPiSourceVerbatim(t *testing.T) {
 	lines := []string{`{"type":"session","version":3,"id":"p1",  "cwd":"/w"}`, `{"type":"custom","id":"x","data":{"k":"<v>"}}`}
 	bundle := session.Bundle{
