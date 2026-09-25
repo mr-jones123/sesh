@@ -83,3 +83,28 @@ func TestImportKeepsSubagentTranscriptThread(t *testing.T) {
 		t.Fatalf("events = %#v", got)
 	}
 }
+
+func TestImportChainsParallelToolResults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	// Claude parents each result on its own tool_use record.
+	data := `{"type":"assistant","uuid":"c1","sessionId":"claude-1","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"a"}}]}}
+{"type":"assistant","uuid":"c2","parentUuid":"c1","sessionId":"claude-1","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"b"}}]}}
+{"type":"user","uuid":"r1","parentUuid":"c1","sessionId":"claude-1","timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"A"}]}}
+{"type":"user","uuid":"r2","parentUuid":"c2","sessionId":"claude-1","timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"B"}]}}
+{"type":"assistant","uuid":"a3","parentUuid":"r2","sessionId":"claude-1","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"both done"}]}}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := New().Import(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One linear chain, so the last event's ancestry reaches both results.
+	events := bundle.Session.Events
+	for i := 1; i < len(events); i++ {
+		if events[i].ParentID != events[i-1].ID {
+			t.Fatalf("event %d (%s) parent = %q, want %q", i, events[i].Type, events[i].ParentID, events[i-1].ID)
+		}
+	}
+}

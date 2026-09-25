@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mr-jones123/sesh/internal/importer"
+	"github.com/mr-jones123/sesh/internal/registry"
 	"github.com/mr-jones123/sesh/internal/session"
 )
 
@@ -39,9 +39,9 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("resolve source path: %w", err)
 	}
 
-	adapter, err := importer.Detect(sourcePath)
+	adapter, err := registry.Detect(sourcePath)
 	if *harnessName != "" {
-		adapter, err = importer.Find(*harnessName)
+		adapter, err = registry.Find(*harnessName)
 	}
 	if err != nil {
 		return err

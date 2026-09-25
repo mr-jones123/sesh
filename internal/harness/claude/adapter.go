@@ -103,6 +103,12 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 				return err
 			}
 		}
+		// Claude points each parallel tool result at its own tool_use record,
+		// which reads as one branch per call. Results follow their calls in
+		// the file, so chain them to the previous event instead.
+		if len(events) > 0 && events[0].Type == session.EventToolResult && len(s.Events) > 0 {
+			events[0].ParentID = s.Events[len(s.Events)-1].ID
+		}
 		if len(events) > 0 {
 			lastEvent[r.UUID] = events[len(events)-1].ID
 		} else {

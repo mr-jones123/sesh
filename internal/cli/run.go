@@ -39,6 +39,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runExport(ctx, args[1:], stdout, stderr)
 	case "import":
 		return runImport(ctx, args[1:], stdout, stderr)
+	case "convert":
+		return runConvert(ctx, args[1:], stdout, stderr)
 	default:
 		printRootUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -61,6 +63,8 @@ func runHelp(args []string, stdout io.Writer) error {
 		printExportUsage(stdout)
 	case "import":
 		printImportUsage(stdout)
+	case "convert":
+		printConvertUsage(stdout)
 	case "version":
 		fmt.Fprintln(stdout, "Usage: sesh version")
 	default:
@@ -80,6 +84,7 @@ Commands:
   inspect   Check that a file contains valid JSON
   export    Convert a harness transcript to a .sesh.json bundle
   import    Read and validate a .sesh.json bundle
+  convert   Write a bundle as another harness's native session
   version   Print the build version
   help      Show command help
 

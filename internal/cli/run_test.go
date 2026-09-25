@@ -112,6 +112,46 @@ func TestRunExportAndImport(t *testing.T) {
 	}
 }
 
+func TestRunConvertClaudeBundleToPi(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "claude.jsonl")
+	bundlePath := filepath.Join(directory, "claude.sesh.json")
+	transcript := `{"type":"user","uuid":"u1","sessionId":"c1","cwd":"/work","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hello"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"c1","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}
+`
+	if err := os.WriteFile(source, []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(context.Background(), []string{"export", "--harness", "claude", "-output", bundlePath, source}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("export error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"convert", "--target", "pi", "--model", "openai/gpt-x", bundlePath}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("convert error = %v", err)
+	}
+	output := filepath.Join(directory, "claude.pi.jsonl")
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	// header, user, assistant, model_change
+	if len(lines) != 4 || !strings.Contains(lines[0], `"type":"session"`) || !strings.Contains(lines[3], `"modelId":"gpt-x"`) {
+		t.Fatalf("pi session = %s", data)
+	}
+	if !strings.Contains(stdout.String(), "pi --session "+output) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunConvertRejectsUnknownTarget(t *testing.T) {
+	err := Run(context.Background(), []string{"convert", "--target", "vim", "x.sesh.json"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported target") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestRunHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
