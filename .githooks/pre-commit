@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "pre-commit: go is required" >&2
+  exit 1
+fi
+
+unformatted=$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))
+if [ -n "$unformatted" ]; then
+  echo "pre-commit: these Go files need gofmt:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+
+echo "pre-commit: running go test ./..."
+go test ./...
