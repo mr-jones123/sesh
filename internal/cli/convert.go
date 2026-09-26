@@ -21,7 +21,7 @@ import (
 func runConvert(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("convert", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	target := flags.String("target", "", "target harness: pi, codex")
+	target := flags.String("target", "", "target harness: pi, codex, claude")
 	model := flags.String("model", "", "provider/model-id the target resumes with (pi)")
 	workspace := flags.String("workspace", "", "working directory recorded in the target session")
 	output := flags.String("output", "", "output .jsonl path")
@@ -67,6 +67,9 @@ func runConvert(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	file.Close()
 	if err != nil {
 		return fmt.Errorf("convert %q: %w", bundlePath, err)
+	}
+	if len(bundle.Session.Events) == 0 {
+		return fmt.Errorf("convert %q: the session has no conversation to convert", bundlePath)
 	}
 
 	opts := harness.ExportOptions{Model: *model, Workspace: *workspace}
@@ -142,22 +145,25 @@ func confirm(stdin io.Reader, stdout io.Writer, question string) bool {
 }
 
 func printConvertUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage: sesh convert --target pi|codex [options] <session.sesh.json>
+	fmt.Fprint(w, `Usage: sesh convert --target pi|codex|claude [options] <session.sesh.json>
 
 Writes a bundle as a native session for the target harness. Recorded tool
 calls are history and are never run.
 
 Shell, write, and edit calls (and reads, where the target has a read tool)
 become the target's own tools; other tools are kept as text. Reasoning from
-another model is dropped for Codex; Pi converts it to text itself. A Pi
-bundle converted to Pi with no overrides is copied back byte-for-byte.
+another model is dropped for Codex and Claude; Pi converts it to text
+itself. A Pi bundle converted to Pi with no overrides is copied back
+byte-for-byte.
 
-Pi opens any session file (pi --session <file>). Codex resumes sessions
-only by ID from its own directory, so use -install to place the file there
-($CODEX_HOME, default ~/.codex); an existing session is never overwritten.
+Pi opens any session file (pi --session <file>). Codex and Claude resume
+sessions only by ID from their own directories, so use -install to place
+the file there: $CODEX_HOME (default ~/.codex) or $CLAUDE_CONFIG_DIR
+(default ~/.claude, filed under the workspace). An existing session is
+never overwritten.
 
 Options:
-  -target name      target harness: pi, codex
+  -target name      target harness: pi, codex, claude
   -model p/id       pi only: provider/model-id to resume with
   -workspace dir    working directory to record; defaults to the source's
   -output path      output path; defaults to <bundle>.<target>.jsonl

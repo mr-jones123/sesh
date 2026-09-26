@@ -12,6 +12,8 @@ go run ./cmd/sesh convert --target pi --model openai-codex/gpt-5.6-sol path/to/s
 pi --session path/to/session.jsonl.pi.jsonl
 go run ./cmd/sesh convert --target codex --install path/to/session.jsonl.sesh.json
 codex resume <printed session id>
+go run ./cmd/sesh convert --target claude --install path/to/session.jsonl.sesh.json
+claude --resume <printed session id>   # from the session's workspace
 ```
 
 `export` converts a Pi, Claude Code, or Codex JSONL transcript into a portable `.sesh.json` bundle. The harness can be detected from the path, or selected explicitly with `--harness`.
@@ -27,13 +29,27 @@ Harness bookkeeping records (Claude attachments, Codex `event_msg`, Pi model cha
 
 ## Hand off to another harness
 
-`convert` writes a bundle as a native session for a target harness, so the conversation continues there. Targets: Pi and Codex.
+`convert` writes a bundle as a native session for a target harness, so the conversation continues there. Targets: Pi, Codex, and Claude Code, from any of the three sources.
 
-- Shell, write, and edit calls become the target's own tools: Claude `Bash` → Pi `bash` / Codex `exec_command`, Claude `Edit` → Pi `edit` / Codex `apply_patch`. Reads become Pi `read`; Codex has no read tool, so reads stay text there. Other tools (web search, MCP, subagents) are kept as text with their results.
+| Neutral action | Pi | Codex | Claude |
+|---|---|---|---|
+| shell | `bash` | `exec_command` | `Bash` |
+| read | `read` | text (no read tool) | `Read` |
+| write | `write` | `apply_patch` (Add File) | `Write` |
+| edit | `edit` | `apply_patch` (Update File) | `Edit`, one per replacement |
+| anything else (web search, MCP, subagents, ...) | text with its result | text with its result | text with its result |
+
 - Only the active branch is written; abandoned rewinds are dropped.
-- Reasoning from another model is dropped for Codex (its reasoning is encrypted per provider). Pi converts foreign reasoning to text itself.
-- `--workspace dir` records a different working directory; Pi requires it to exist. `--model provider/id` sets the model Pi resumes with.
+- Reasoning from another model is dropped for Codex and Claude (their reasoning is encrypted or signed per provider). Pi converts foreign reasoning to text itself.
+- Calls the source never answered (interrupted runs) get an explicit "no result recorded" result, since Codex and Claude reject unanswered calls.
+- Relative file paths become absolute under the workspace for Claude, whose file tools require absolute paths.
+- `--workspace dir` records a different working directory; Pi requires it to exist, and Claude files the session under it. `--model provider/id` sets the model Pi resumes with.
 - Recorded tool calls are history: they are never run.
 - A Pi bundle converted back to Pi with no overrides is copied byte-for-byte.
 
-Pi opens any file with `pi --session <file>`, so nothing is installed. Codex resumes sessions only by ID from its own directory, so `--install` writes the rollout to `$CODEX_HOME/sessions/YYYY/MM/DD/` (default `~/.codex`) after a confirmation prompt (`--yes` skips it). Each conversion gets a new session ID and never overwrites an existing session. Codex registers the session itself on first resume.
+Pi opens any file with `pi --session <file>`, so nothing is installed. Codex and Claude resume sessions only by ID from their own directories, so `--install` writes the file there after a confirmation prompt (`--yes` skips it):
+
+- Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl` (default `~/.codex`). Codex registers the session itself on first resume.
+- Claude: `$CLAUDE_CONFIG_DIR/projects/<workspace, non-alphanumerics as ->/<id>.jsonl` (default `~/.claude`). Run `claude --resume <id>` from that workspace.
+
+Each conversion gets a new session ID and never overwrites an existing session.
