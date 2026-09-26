@@ -26,12 +26,12 @@ sesh convert --target claude --install path/to/session.jsonl.sesh.json
 claude --resume <printed session id>   # from the session's workspace
 ```
 
-`export` converts a Pi, Claude Code, or Codex JSONL transcript into a portable `.sesh.json` bundle. The harness can be detected from the path, or selected explicitly with `--harness`.
+`export` converts a Pi, Claude Code, or Codex JSONL transcript into a portable `.sesh.json` bundle, with secrets and personal paths redacted (see [Redaction](#redaction)). The harness can be detected from the path, or selected explicitly with `--harness`. The source transcript is never modified.
 
 A bundle (format version 2) holds two views of the session:
 
 - `session.events`: the harness-neutral timeline of messages, reasoning, tool calls, tool results, and compaction summaries. Each tool result links to its call by ID, and `parent_id` links events into a tree.
-- `raw_records`: every source line, byte-for-byte, for lossless same-harness export.
+- `raw_records`: every source line. With `--no-redact` they are byte-for-byte; redacted, only the replaced text inside JSON strings differs.
 
 Harness bookkeeping records (Claude attachments, Codex `event_msg`, Pi model changes, ...) stay in `raw_records` only. Images are not yet extracted into the timeline. Version 1 bundles must be re-exported.
 
@@ -55,7 +55,8 @@ Harness bookkeeping records (Claude attachments, Codex `event_msg`, Pi model cha
 - Relative file paths become absolute under the workspace for Claude, whose file tools require absolute paths.
 - `--workspace dir` records a different working directory; Pi requires it to exist, and Claude files the session under it. `--model provider/id` sets the model Pi resumes with.
 - Recorded tool calls are history: they are never run.
-- A Pi bundle converted back to Pi with no overrides is copied byte-for-byte.
+- An unredacted (`--no-redact`) Pi bundle converted back to Pi with no overrides is copied byte-for-byte.
+- In a redacted bundle, `~` that starts a path in the workspace or a tool call becomes the home directory of whoever runs `convert`, so a session continues on another machine with the same layout under its home.
 
 Pi opens any file with `pi --session <file>`, so nothing is installed. Codex and Claude resume sessions only by ID from their own directories, so `--install` writes the file there after a confirmation prompt (`--yes` skips it):
 
@@ -64,11 +65,28 @@ Pi opens any file with `pi --session <file>`, so nothing is installed. Codex and
 
 Each conversion gets a new session ID and never overwrites an existing session.
 
-## Privacy
+## Redaction
 
-Session transcripts contain prompts, source code, tool arguments, command output, local paths, and anything an agent read, including API keys and `.env` files. A bundle keeps all of it: `raw_records` holds every source line unchanged.
+Session transcripts contain prompts, source code, tool arguments, command output, local paths, and anything an agent read, including API keys and `.env` files. `export` replaces these in both the event timeline and the raw source lines, and prints how many it replaced per rule:
 
-Sesh does not redact anything yet. Treat bundles and converted sessions as private files, and do not share or upload them until you have reviewed them yourself.
+- API keys and tokens with a known format: OpenAI, Anthropic, GitHub, AWS, Google, Slack, Stripe, Hugging Face, npm, JWTs, bearer tokens, PEM private keys
+- passwords in URLs (`postgres://user:[REDACTED:url-password]@host`) and upper-case `*_TOKEN=`, `*_SECRET=`, `*_PASSWORD=`, `*_API_KEY=` values
+- email addresses
+- home directories: `/Users/<name>`, `/home/<name>`, `C:\Users\<name>` and encoded session directories like `-Users-<name>-` become `~`
+
+```text
+$ sesh export session.jsonl
+exported 18 events to session.jsonl.sesh.json
+redacted 89 matches
+  home-path          78
+  email              11
+```
+
+The rules are fixed regular expressions, so the same transcript always gives the same bundle. Placeholders such as `your-api-key` and references such as `process.env.API_KEY` are kept. Only JSON string contents change; every other byte of a raw line stays as it was. The bundle is marked `"redacted": true`, and `sesh import` shows it.
+
+Known formats only: a key without a known prefix, a lower-case `password: hunter2`, a user name typed in prose, or text inside an image gets through. Review a bundle before sharing it.
+
+`sesh export --no-redact` keeps everything, for a byte-exact bundle you do not share.
 
 ## License
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/mr-jones123/sesh/internal/harness"
 	"github.com/mr-jones123/sesh/internal/ids"
+	"github.com/mr-jones123/sesh/internal/redact"
 	"github.com/mr-jones123/sesh/internal/registry"
 	"github.com/mr-jones123/sesh/internal/session"
 )
@@ -70,6 +71,16 @@ func runConvert(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 	if len(bundle.Session.Events) == 0 {
 		return fmt.Errorf("convert %q: the session has no conversation to convert", bundlePath)
+	}
+	if bundle.Redacted {
+		// Redaction wrote home directories as ~; continue under this user's.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home directory for ~ paths: %w", err)
+		}
+		if err := redact.ExpandHome(&bundle, home); err != nil {
+			return fmt.Errorf("convert %q: %w", bundlePath, err)
+		}
 	}
 
 	opts := harness.ExportOptions{Model: *model, Workspace: *workspace}

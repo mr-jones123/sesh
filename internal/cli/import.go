@@ -52,6 +52,11 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	fmt.Fprintf(stdout, "harness: %s\n", bundle.Session.Harness)
 	fmt.Fprintf(stdout, "events: %d\n", len(bundle.Session.Events))
 	fmt.Fprintf(stdout, "raw records: %d\n", len(bundle.RawRecords))
+	if bundle.Redacted {
+		fmt.Fprintln(stdout, "redacted: yes")
+	} else {
+		fmt.Fprintln(stdout, "redacted: no (raw records are byte-exact and may contain secrets)")
+	}
 	if bundle.Source.Path != "" {
 		fmt.Fprintf(stdout, "source: %s\n", bundle.Source.Path)
 	}

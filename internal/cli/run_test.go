@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mr-jones123/sesh/internal/session"
 )
 
 func TestRunWithoutArgumentsPrintsHelp(t *testing.T) {
@@ -204,6 +206,96 @@ func TestRunConvertRejectsUnknownTarget(t *testing.T) {
 	err := Run(context.Background(), []string{"convert", "--target", "vim", "x.sesh.json"}, nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported target") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// piTranscript has a user message holding key and a bash call under
+// /Users/alice, so both secret and home-path redaction apply.
+func piTranscript(key string) string {
+	return `{"type":"session","version":3,"id":"demo","timestamp":"2026-01-01T00:00:00Z","cwd":"/Users/alice/app"}
+{"type":"message","id":"m1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"use ` + key + `"}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"cat /Users/alice/app/go.mod"}}]}}
+`
+}
+
+func TestRunExportRedactsByDefault(t *testing.T) {
+	key := "sk-proj-" + strings.Repeat("a1B2", 12) // built at run time for secret scanners
+	directory := t.TempDir()
+	source := filepath.Join(directory, "pi.jsonl")
+	transcript := piTranscript(key)
+	if err := os.WriteFile(source, []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"export", "--harness", "pi", source}, nil, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("export error = %v", err)
+	}
+	redacted, err := os.ReadFile(source + ".sesh.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{key, "alice"} {
+		if strings.Contains(string(redacted), leaked) {
+			t.Errorf("bundle still contains %q", leaked)
+		}
+	}
+	if !strings.Contains(string(redacted), `"redacted": true`) || !strings.Contains(stdout.String(), "openai-key") {
+		t.Errorf("stdout = %q, want a redacted bundle and its findings", stdout.String())
+	}
+	if got, _ := os.ReadFile(source); string(got) != transcript {
+		t.Error("export modified the source transcript")
+	}
+
+	exact := filepath.Join(directory, "exact.sesh.json")
+	if err := Run(context.Background(), []string{"export", "--harness", "pi", "-no-redact", "-output", exact, source}, nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("export -no-redact error = %v", err)
+	}
+	file, err := os.Open(exact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	bundle, err := session.DecodeBundle(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(transcript, "\n"), "\n")
+	if bundle.Redacted || len(bundle.RawRecords) != len(lines) {
+		t.Fatalf("redacted = %v, raw records = %d", bundle.Redacted, len(bundle.RawRecords))
+	}
+	for i, raw := range bundle.RawRecords {
+		if raw.Record != lines[i] {
+			t.Errorf("raw line %d = %s, want the source line unchanged", i+1, raw.Record)
+		}
+	}
+}
+
+func TestRunConvertExpandsHomeInRedactedBundle(t *testing.T) {
+	directory := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	source := filepath.Join(directory, "pi.jsonl")
+	if err := os.WriteFile(source, []byte(piTranscript("hello")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(context.Background(), []string{"export", "--harness", "pi", source}, nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("export error = %v", err)
+	}
+	output := filepath.Join(directory, "out.pi.jsonl")
+	if err := Run(context.Background(), []string{"convert", "--target", "pi", "-output", output, source + ".sesh.json"}, nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("convert error = %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The ~ written by redaction continues under this user's home, in the
+	// session's working directory and in the replayed tool call.
+	for _, want := range []string{`"cwd":"` + home + `/app"`, `cat ` + home + `/app/go.mod`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("pi session missing %s:\n%s", want, data)
+		}
 	}
 }
 

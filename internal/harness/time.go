@@ -1,6 +1,9 @@
 package harness
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 func ParseTime(value any) time.Time {
 	switch value := value.(type) {
@@ -12,4 +15,15 @@ func ParseTime(value any) time.Time {
 	default:
 		return time.Time{}
 	}
+}
+
+// FileTime is the creation time for a transcript that records none: the
+// file's modification time, so importing the same file twice gives the same
+// bundle. time.Now() would differ on every run.
+func FileTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }

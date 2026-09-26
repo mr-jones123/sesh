@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/mr-jones123/sesh/internal/harness"
 	"github.com/mr-jones123/sesh/internal/harness/jsonl"
@@ -124,7 +123,7 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 		return session.Bundle{}, fmt.Errorf("session id not found")
 	}
 	if s.CreatedAt.IsZero() {
-		s.CreatedAt = time.Now()
+		s.CreatedAt = harness.FileTime(path)
 	}
 	return bundle, nil
 }

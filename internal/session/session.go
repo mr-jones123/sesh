@@ -72,10 +72,13 @@ type Source struct {
 }
 
 type Bundle struct {
-	FormatVersion int       `json:"format_version"`
-	Source        Source    `json:"source,omitempty"`
-	Session       Session   `json:"session"`
-	RawRecords    []RawLine `json:"raw_records,omitempty"`
+	FormatVersion int    `json:"format_version"`
+	Source        Source `json:"source,omitempty"`
+	// Redacted means secrets, emails and home directories were replaced
+	// (home directories with ~), so raw records are no longer byte-exact.
+	Redacted   bool      `json:"redacted,omitempty"`
+	Session    Session   `json:"session"`
+	RawRecords []RawLine `json:"raw_records,omitempty"`
 }
 
 // RawLine keeps one source line verbatim. Record is a string, not

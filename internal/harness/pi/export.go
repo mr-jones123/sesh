@@ -20,16 +20,17 @@ import (
 // drops provider signatures before sending history to the resumed model.
 const importedProvider = "sesh"
 
-// Export writes bundle as a Pi session (format version 3). A Pi bundle with no
-// overrides is copied back byte-for-byte; every other bundle is rebuilt from
-// its turns along the active branch.
+// Export writes bundle as a Pi session (format version 3). An unredacted Pi
+// bundle with no overrides is copied back byte-for-byte; every other bundle
+// is rebuilt from its turns along the active branch. A redacted bundle's raw
+// lines hold ~ in place of the home directory, so they are not reused.
 func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.ExportOptions, w io.Writer) error {
 	provider, modelID, err := splitModel(opts.Model)
 	if err != nil {
 		return err
 	}
 	out := bufio.NewWriter(w)
-	if bundle.Session.Harness == "pi" && opts.Model == "" && opts.Workspace == "" && len(bundle.RawRecords) > 0 {
+	if bundle.Session.Harness == "pi" && !bundle.Redacted && opts.Model == "" && opts.Workspace == "" && len(bundle.RawRecords) > 0 {
 		for _, raw := range bundle.RawRecords {
 			if _, err := out.WriteString(raw.Record + "\n"); err != nil {
 				return err
