@@ -64,6 +64,8 @@ func TestText(t *testing.T) {
 		{"encoded session directory", "~/.claude/projects/-Users-alice-src-app/1.jsonl", "~/.claude/projects/-Users-~-src-app/1.jsonl"},
 		{"pi session directory", "sessions/--Users-alice-src-app--/1.jsonl", "sessions/--Users-~-src-app--/1.jsonl"},
 		{"words with -home- are not paths", "my-home-page", "my-home-page"},
+		{"root home", `cwd="/root/vm-app" && cd /root`, `cwd="~/vm-app" && cd ~`},
+		{"root inside a longer path", "ls /proc/1/root ./root /rooted", "ls /proc/1/root ./root /rooted"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

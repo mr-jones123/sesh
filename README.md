@@ -72,7 +72,7 @@ Session transcripts contain prompts, source code, tool arguments, command output
 - API keys and tokens with a known format: OpenAI, Anthropic, GitHub, AWS, Google, Slack, Stripe, Hugging Face, npm, JWTs, bearer tokens, PEM private keys
 - passwords in URLs (`postgres://user:[REDACTED:url-password]@host`) and upper-case `*_TOKEN=`, `*_SECRET=`, `*_PASSWORD=`, `*_API_KEY=` values
 - email addresses
-- home directories: `/Users/<name>`, `/home/<name>`, `C:\Users\<name>` and encoded session directories like `-Users-<name>-` become `~`
+- home directories: `/Users/<name>`, `/home/<name>`, `/root`, `C:\Users\<name>` and encoded session directories like `-Users-<name>-` become `~`
 
 ```text
 $ sesh export session.jsonl

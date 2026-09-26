@@ -92,6 +92,16 @@ var Rules = []Rule{
 		Needles:     []string{"/Users/", "/home/", `:\Users\`},
 		Replacement: "~",
 	},
+	// /root is root's home: no user name to hide, but writing it as ~ lets a
+	// session from a root VM continue under another user's home. Not
+	// /proc/root or ./root, whose /root is part of a longer path.
+	{
+		Name:        "home-path",
+		Pattern:     regexp.MustCompile(`(?:^|[^A-Za-z0-9_.~/-])(/root)\b`),
+		Group:       1,
+		Needles:     []string{"/root"},
+		Replacement: "~",
+	},
 	// Claude and Pi name session directories after the workspace with / as
 	// -, so /Users/xy/app becomes -Users-xy-app. The name becomes ~ there.
 	{

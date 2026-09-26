@@ -118,7 +118,7 @@ Converts a local harness transcript into a portable .sesh.json bundle.
 Secrets, email addresses and home-directory paths are replaced in the bundle
 by default, in both the event timeline and the raw source lines: API keys and
 tokens with a known format, URL passwords, upper-case *_TOKEN/*_SECRET/
-*_PASSWORD/*_API_KEY values, emails, and /Users/<name> or /home/<name> (as ~).
+*_PASSWORD/*_API_KEY values, emails, and /Users/<name>, /home/<name> or /root (as ~).
 The rules are fixed regular expressions, so the same transcript always gives
 the same bundle. They catch known formats only: review a bundle before
 sharing it. The source transcript is never modified.
