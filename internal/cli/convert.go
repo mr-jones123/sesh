@@ -164,8 +164,9 @@ calls are history and are never run.
 Shell, write, and edit calls (and reads, where the target has a read tool)
 become the target's own tools; other tools are kept as text. Reasoning from
 another model is dropped for Codex and Claude; Pi converts it to text
-itself. A Pi bundle converted to Pi with no overrides is copied back
-byte-for-byte.
+itself. An unredacted (export -no-redact) Pi bundle converted to Pi with no
+overrides is copied back byte-for-byte. In a redacted bundle, ~ at the start
+of a path becomes this user's home directory.
 
 Pi opens any session file (pi --session <file>). Codex and Claude resume
 sessions only by ID from their own directories, so use -install to place

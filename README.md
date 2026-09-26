@@ -13,6 +13,16 @@ sesh help
 
 Or build from a clone with `go build ./cmd/sesh`.
 
+### Use it from an agent
+
+The repository ships an [Agent Skill](skills/sesh/SKILL.md) that teaches Claude Code, Codex, Pi, and other agents to find their session file, export it, and hand it to another harness:
+
+```sh
+npx skills add mr-jones123/sesh --skill sesh
+```
+
+Then ask the agent, for example, "hand this session off to Codex".
+
 ## Try it
 
 ```sh
