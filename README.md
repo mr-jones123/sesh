@@ -65,6 +65,40 @@ Pi opens any file with `pi --session <file>`, so nothing is installed. Codex and
 
 Each conversion gets a new session ID and never overwrites an existing session.
 
+## Example: one app, three agents
+
+Claude Code, Codex, and Pi built this notes app together on a Linux VM, one step each, each continuing the previous agent's session through sesh:
+
+![Notes app built by Claude Code, Codex, and Pi](docs/notes-app.png)
+
+| Step | Agent | Continued from | Built |
+|---|---|---|---|
+| 1 | Claude Code | a new session | Node server with no dependencies, `GET`/`POST /api/notes` |
+| 2 | Codex | Claude's session | frontend "for the API described above", known only from Claude's history |
+| 3 | Pi | Codex's session | deleting notes, and the server left running |
+| 4 | Claude Code | Pi's session | README, after listing what each earlier step added, with its commit |
+
+Each handoff is an export, a convert, and a resume:
+
+```sh
+# Claude → Codex
+sesh export -output 1-claude.sesh.json ~/.claude/projects/-root-notes-app/<id>.jsonl
+sesh convert --target codex --install --yes 1-claude.sesh.json
+codex exec resume <printed id> "You are picking up this project. Build the frontend for the API described above."
+
+# Codex → Pi (codex exec resume appends to the installed rollout)
+sesh export -output 2-codex.sesh.json ~/.codex/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl
+sesh convert --target pi -output 2-codex.pi.jsonl 2-codex.sesh.json
+pi --session 2-codex.pi.jsonl -p "You are step 3 of 3: add deleting a note."
+
+# Pi → Claude (pi --session appends to that file; --harness because it is outside ~/.pi)
+sesh export --harness pi -output 3-pi.sesh.json 2-codex.pi.jsonl
+sesh convert --target claude --install --yes 3-pi.sesh.json
+claude --resume <printed id> -p "From the history: what did each previous step add?"
+```
+
+Each export redacted the session (95, 41, and 18 replacements, mostly `/root` → `~`), and each convert turned `~` back into the working directory `/root/notes-app`. Every hop kept the messages, the tool calls with their results, and the working directory; reasoning was dropped going into Codex and Claude. The source session files were never changed.
+
 ## Redaction
 
 Session transcripts contain prompts, source code, tool arguments, command output, local paths, and anything an agent read, including API keys and `.env` files. `export` replaces these in both the event timeline and the raw source lines, and prints how many it replaced per rule:
