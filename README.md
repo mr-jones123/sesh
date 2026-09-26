@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="sesh: portable AI coding sessions" width="800">
+</p>
+
 # sesh
 
 Portable import and export for AI coding sessions.
