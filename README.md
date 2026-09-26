@@ -138,6 +138,50 @@ Known formats only: a key without a known prefix, a lower-case `password: hunter
 
 `sesh export --no-redact` keeps everything, for a byte-exact bundle you do not share.
 
+## Troubleshooting
+
+### Installing
+
+| You see | Why | Fix |
+|---|---|---|
+| `zsh: command not found: sesh` after `go install` | `go install` puts binaries in `$(go env GOPATH)/bin` (usually `~/go/bin`), which is not on your `PATH` | `echo 'export PATH="$PATH:$HOME/go/bin"' >> ~/.zshrc && source ~/.zshrc` |
+| `unknown command "list"`, or `sesh version` prints an old version | an older binary is installed | `go install github.com/mr-jones123/sesh/cmd/sesh@latest` again; there is no `go update` |
+| the agent skill uses commands your `sesh` does not have | the installed skill and CLI are from different releases | update both: `go install …@latest` and `npx skills update sesh` |
+
+### Finding and exporting a session
+
+| You see | Why | Fix |
+|---|---|---|
+| `no sessions for <dir>` / `no readable sessions recorded for <dir>` | nothing was recorded with this exact working directory | `cd` into the folder the agent ran in, or `sesh list -all` to see every folder |
+| `no session with ID "…"` | the ID is not a prefix of any recorded session | copy the ID from `sesh list -all`; add `-harness` if you know which harness |
+| `ID "…" matches N sessions; use more characters` | the prefix is too short | pass more characters, or narrow with `-harness pi` |
+| `export expects one session path or ID, or -last` when you did pass flags | a flag came after the ID or path; Go's `flag` package stops at the first non-flag argument | put flags first: `sesh export -harness pi 01a0de`, not `sesh export 01a0de -harness pi` |
+| `could not detect harness for "…"; use --harness` | the file is not inside `~/.claude`, `~/.codex`, or `~/.pi` | `sesh export -harness claude\|codex\|pi <file>` |
+| `-last` exported a different agent's session | several agents worked in the same folder; `-last` takes the newest of any harness | `sesh export -last -harness <your harness>` |
+| `unsupported bundle format version 1` | the bundle was made before format version 2 | export it again from the original transcript |
+
+### Converting and resuming
+
+| You see | Why | Fix |
+|---|---|---|
+| `-install and -output are mutually exclusive` | `-install` chooses the path itself | drop one of them |
+| `pi opens session files directly; convert without -install` | Pi opens any file, so there is nothing to install | `sesh convert --target pi <bundle>`, then `pi --session <bundle>.pi.jsonl` |
+| `the session has no conversation to convert` | the transcript has no user or assistant messages (for example a session that was opened and closed) | pick another session from `sesh list` |
+| Pi: `Stored session working directory does not exist` | the recorded folder is not on this machine | convert again with `-workspace <folder that exists>` |
+| `claude sessions need an absolute workspace` | the bundle's workspace is empty or relative | `-workspace /absolute/path` |
+| `model "…" must be provider/model-id` | `-model` needs both parts | e.g. `-model openai-codex/gpt-5.6-sol` |
+| `claude --resume <id>` says the session does not exist | Claude looks for sessions under the folder you run it from | run the printed `cd <workspace> && claude --resume <id>`, or pick it from `claude --resume` in that folder |
+| Codex: `workspace routing discovery unauthorized (401)`, or `refresh token was already used` | your Codex login expired or its refresh token was spent; this happens to every session, not just converted ones | `codex logout && codex login`, then resume again. Do not copy `~/.codex/auth.json` into another `CODEX_HOME`: a refresh there spends the original token |
+| Codex asks to trust the folder, or `codex exec resume` fails outside a git repository | Codex's own folder checks | answer the trust prompt, or pass `--skip-git-repo-check` to `codex exec` |
+| the resumed agent does not remember its reasoning, or a web search or MCP call appears as plain text | reasoning from another model is dropped for Codex and Claude, and tools the target lacks become text with their results | expected; the messages, tool calls, and results are all there |
+
+### Redaction
+
+| You see | Why | Fix |
+|---|---|---|
+| a secret is still in the bundle | redaction matches known formats only: a key without a known prefix, a lower-case `password: …`, a name in prose, or text inside an image gets through | edit or delete it before sharing; open an issue with the format (not the secret) |
+| paths show `~` instead of your home directory | home directories are redacted to `~`; `convert` turns them back into the current user's home | expected; export with `-no-redact` for a private, byte-exact copy |
+
 ## Releasing
 
 1. Add the release to [CHANGELOG.md](CHANGELOG.md) and set `metadata.version` in [skills/sesh/SKILL.md](skills/sesh/SKILL.md). Bump the minor version for new commands or flags, the patch version for fixes.
