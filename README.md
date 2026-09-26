@@ -7,11 +7,13 @@ Portable import and export for AI coding sessions.
 Requires Go 1.26.6 or newer (older Go toolchains since 1.21 download it automatically).
 
 ```sh
-go install github.com/mr-jones123/sesh/cmd/sesh@latest
-sesh help
+go install github.com/mr-jones123/sesh/cmd/sesh@latest    # or @v0.2.0 for a specific release
+sesh version
 ```
 
-Or build from a clone with `go build ./cmd/sesh`.
+`go install` puts `sesh` in `$(go env GOPATH)/bin` (usually `~/go/bin`); add that directory to your `PATH` if `sesh` is not found. Or build from a clone with `go build ./cmd/sesh`.
+
+Releases follow [Semantic Versioning](https://semver.org) and are listed in [CHANGELOG.md](CHANGELOG.md). Until 1.0.0, a minor version may change commands, flags, or the bundle format.
 
 ### Use it from an agent
 
@@ -26,17 +28,21 @@ Then ask the agent, for example, "hand this session off to Codex".
 ## Try it
 
 ```sh
-sesh export --harness claude path/to/session.jsonl
-sesh import path/to/session.jsonl.sesh.json
-sesh convert --target pi --model openai-codex/gpt-5.6-sol path/to/session.jsonl.sesh.json
-pi --session path/to/session.jsonl.pi.jsonl
-sesh convert --target codex --install path/to/session.jsonl.sesh.json
+sesh list                                   # sessions recorded for this directory, newest first
+sesh export -last                           # export the newest one → <harness>-<id>.sesh.json
+sesh export 3636a042                        # or pick one by ID (or its first characters)
+sesh import claude-3636a042.sesh.json
+sesh convert --target pi --model openai-codex/gpt-5.6-sol claude-3636a042.sesh.json
+pi --session claude-3636a042.pi.jsonl
+sesh convert --target codex --install claude-3636a042.sesh.json
 codex resume <printed session id>
-sesh convert --target claude --install path/to/session.jsonl.sesh.json
-claude --resume <printed session id>   # from the session's workspace
+sesh convert --target claude --install claude-3636a042.sesh.json
+claude --resume <printed session id>        # from the session's workspace
 ```
 
-`export` converts a Pi, Claude Code, or Codex JSONL transcript into a portable `.sesh.json` bundle, with secrets and personal paths redacted (see [Redaction](#redaction)). The harness can be detected from the path, or selected explicitly with `--harness`. The source transcript is never modified.
+`list` reads the sessions Claude Code (`~/.claude`), Codex (`~/.codex`), and Pi (`~/.pi/agent`) recorded, keeps those started in the current directory, and shows the first message you typed in each. `-all` lists every directory, `-harness` narrows to one harness, and `-n 0` shows every row.
+
+`export` converts a Pi, Claude Code, or Codex JSONL transcript into a portable `.sesh.json` bundle, with secrets and personal paths redacted (see [Redaction](#redaction)). It takes a transcript path, a session ID or ID prefix, or `-last`; `-harness` picks the harness for a path or narrows an ID or `-last`. The source transcript is never modified.
 
 A bundle (format version 2) holds two views of the session:
 
@@ -131,6 +137,15 @@ The rules are fixed regular expressions, so the same transcript always gives the
 Known formats only: a key without a known prefix, a lower-case `password: hunter2`, a user name typed in prose, or text inside an image gets through. Review a bundle before sharing it.
 
 `sesh export --no-redact` keeps everything, for a byte-exact bundle you do not share.
+
+## Releasing
+
+1. Add the release to [CHANGELOG.md](CHANGELOG.md) and set `metadata.version` in [skills/sesh/SKILL.md](skills/sesh/SKILL.md). Bump the minor version for new commands or flags, the patch version for fixes.
+2. Tag it and push the tag. `go install …@latest` resolves to the newest tag, and `sesh version` reports it.
+   ```sh
+   git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
+   ```
+3. Publish the changelog section as a GitHub release: `gh release create v0.2.0 --title v0.2.0 --notes-file notes.md`.
 
 ## License
 

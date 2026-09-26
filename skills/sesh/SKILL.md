@@ -2,10 +2,11 @@
 name: sesh
 description: Hand an AI coding session from one agent harness to another (Claude Code, Codex, Pi) and export sessions as redacted, portable bundles with the sesh CLI. Use when the user wants to continue the current conversation in a different agent, move or share a session with another developer or machine, convert a Claude Code, Codex, or Pi transcript, or strip API keys, emails, and home paths from a session before sharing it.
 license: MIT
-compatibility: Requires the sesh CLI (Go 1.26.6+ to install) and at least one of Claude Code, Codex, or Pi. Reads session files from ~/.claude, ~/.codex, and ~/.pi.
+compatibility: Requires the sesh CLI v0.2.0+ (Go 1.26.6+ to install) and at least one of Claude Code, Codex, or Pi. Reads session files from ~/.claude, ~/.codex, and ~/.pi.
 metadata:
   author: mr-jones123
   source: https://github.com/mr-jones123/sesh
+  version: "0.2.0"
 ---
 
 # sesh
@@ -24,46 +25,37 @@ Check that the CLI is installed:
 sesh version
 ```
 
-If it is missing, install it (needs Go 1.26.6+; older Go since 1.21 downloads the toolchain):
+If it is missing, or `sesh list` is not a command, install or update it (needs Go 1.26.6+; older Go since 1.21 downloads the toolchain):
 
 ```sh
 go install github.com/mr-jones123/sesh/cmd/sesh@latest
 ```
 
-## Find the session file
+## Pick the session
 
-Each harness stores sessions in its own directory. To hand off the session you are running in, pick the newest file for the current directory.
+Sessions are named by long UUIDs; never ask the user for one. `sesh list` shows what each harness recorded for the current directory, newest first, with the first message the user typed:
 
-| Harness | Session files |
-|---|---|
-| Claude Code | `~/.claude/projects/<cwd with every non-alphanumeric as ->/<id>.jsonl` |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`; the first line records the `cwd` |
-| Pi | `~/.pi/agent/sessions/--<cwd without its leading /, with / as ->--/<time>_<id>.jsonl` |
-
-`$CLAUDE_CONFIG_DIR` and `$CODEX_HOME` replace `~/.claude` and `~/.codex` when set.
-
-```sh
-# Claude Code: newest session for the current directory
-ls -t ~/.claude/projects/$(pwd | sed 's/[^A-Za-z0-9]/-/g')/*.jsonl | head -1
-
-# Codex: newest rollout started in the current directory
-for f in $(ls -t ~/.codex/sessions/*/*/*/rollout-*.jsonl); do
-  head -1 "$f" | grep -q "\"cwd\":\"$PWD\"" && { echo "$f"; break; }
-done
-
-# Pi: newest session for the current directory
-ls -t ~/.pi/agent/sessions/--$(pwd | sed 's#^/##; s#/#-#g')--/*.jsonl | head -1
+```text
+$ sesh list
+HARNESS  UPDATED          ID        EVENTS  FIRST MESSAGE
+claude   2 min ago        c3894fc5  18      We are building a small notes web app…
+codex    today 15:52      01a0de68  16      You are picking up this project from…
+pi       yesterday 18:04  019fd2e2  52      add deleting a note…
 ```
 
-If several sessions match, or the user means an older one, list the candidates with their modification times and ask which one.
+- **The session you are running in** is the newest one for your own harness: `sesh export -last -harness claude` (or `codex`, `pi`). Always pass `-harness`: without it, `-last` takes the newest session of any harness, which may be another agent working in the same directory.
+- **Another session:** find it with `sesh list` (`-all` for every directory, `-harness` to narrow, `-n 0` for all rows) and pass its ID, or the first characters of it, to `sesh export`. If more than one could be meant, show the user the rows and ask.
 
 ## Export
 
 ```sh
-sesh export <session.jsonl>                 # writes <session.jsonl>.sesh.json
-sesh export -output handoff.sesh.json <session.jsonl>
-sesh export --harness pi <file.jsonl>       # needed when the file is outside the harness's own directory
+sesh export -last -harness claude             # the current Claude Code session → claude-<id>.sesh.json
+sesh export 01a0de68                          # by ID or ID prefix from sesh list → <harness>-<id>.sesh.json
+sesh export -output handoff.sesh.json -last -harness codex
+sesh export <session.jsonl>                   # by path → <session.jsonl>.sesh.json
 ```
+
+A session found by ID or `-last` is written to the current directory. Give a path with `-output` if the current directory is a repository the bundle should not be committed to.
 
 Export redacts by default and prints what it replaced, per rule:
 
@@ -94,8 +86,7 @@ After resuming, the agent sees the earlier conversation as history. Give it a ta
 ## Example: hand the current Claude Code session to Codex
 
 ```sh
-f=$(ls -t ~/.claude/projects/$(pwd | sed 's/[^A-Za-z0-9]/-/g')/*.jsonl | head -1)
-sesh export -output /tmp/handoff.sesh.json "$f"
+sesh export -last -harness claude -output /tmp/handoff.sesh.json
 sesh convert --target codex --install /tmp/handoff.sesh.json   # confirm the prompt
 codex resume <printed id>
 ```

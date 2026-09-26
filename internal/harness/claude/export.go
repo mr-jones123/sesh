@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"regexp"
 	"time"
@@ -52,13 +51,9 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 // projects/<workspace with every non-alphanumeric replaced by '-'>/<id>.jsonl
 // under $CLAUDE_CONFIG_DIR (default ~/.claude).
 func (Adapter) InstallPath(bundle session.Bundle, opts harness.ExportOptions) (string, error) {
-	home := os.Getenv("CLAUDE_CONFIG_DIR")
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("find claude home: %w", err)
-		}
-		home = filepath.Join(userHome, ".claude")
+	home, err := claudeHome()
+	if err != nil {
+		return "", err
 	}
 	dir := workspace(bundle, opts)
 	if !filepath.IsAbs(dir) {

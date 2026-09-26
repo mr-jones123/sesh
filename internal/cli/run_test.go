@@ -299,6 +299,36 @@ func TestRunConvertExpandsHomeInRedactedBundle(t *testing.T) {
 	}
 }
 
+func TestRunExportFindsSessionByIDAndLast(t *testing.T) {
+	pi := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", pi)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	work, _ := filepath.EvalSymlinks(t.TempDir())
+	t.Chdir(work)
+	dir := filepath.Join(pi, "sessions", "--"+strings.ReplaceAll(strings.TrimPrefix(work, "/"), "/", "-")+"--")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	transcript := strings.Replace(piTranscript("hello"), "/Users/alice/app", work, 1)
+	if err := os.WriteFile(filepath.Join(dir, "2026-01-01T00-00-00-000Z_01a0de9d-aaaa.jsonl"), []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{{"export", "01a0de"}, {"export", "-last"}} {
+		_ = os.Remove("pi-01a0de9d.sesh.json")
+		var stdout bytes.Buffer
+		if err := Run(context.Background(), args, nil, &stdout, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		// Found by ID or -last, the bundle lands in the current directory,
+		// not next to the transcript in Pi's session directory.
+		if _, err := os.Stat(filepath.Join(work, "pi-01a0de9d.sesh.json")); err != nil {
+			t.Errorf("%v: %v; stdout = %q", args, err, stdout.String())
+		}
+	}
+}
+
 func TestRunHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

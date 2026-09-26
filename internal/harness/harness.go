@@ -43,3 +43,18 @@ type Installer interface {
 	// ResumeCommand continues the installed session.
 	ResumeCommand(session.Bundle, ExportOptions) string
 }
+
+// SessionFile is one transcript a harness recorded on this machine.
+type SessionFile struct {
+	Path string
+	// ID is the session ID from the file name.
+	ID string
+}
+
+// Locator is an adapter that knows where its harness stores sessions.
+type Locator interface {
+	// Sessions lists the harness's transcripts. With dir set, it lists only
+	// sessions whose storage location or header says they started in dir;
+	// callers confirm against the imported workspace.
+	Sessions(dir string) ([]SessionFile, error)
+}

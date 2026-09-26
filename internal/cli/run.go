@@ -5,12 +5,28 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime/debug"
 )
 
-// Version can be replaced at build time with:
+// Version is the release this binary was built from. It is empty unless set
+// at build time with:
 //
-//	go build -ldflags "-X github.com/mr-jones123/sesh/internal/cli.Version=v0.1.0" ./cmd/sesh
-var Version = "dev"
+//	go build -ldflags "-X github.com/mr-jones123/sesh/internal/cli.Version=v0.2.0" ./cmd/sesh
+//
+// Otherwise the version Go recorded in the binary is used: the tag for
+// `go install github.com/mr-jones123/sesh/cmd/sesh@v0.2.0`, or a
+// pseudo-version for a build from a git checkout.
+var Version string
+
+func version() string {
+	if Version != "" {
+		return Version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
 
 // Run is the CLI entry point. Arguments and output streams are passed in
 // instead of read globally, which keeps command parsing easy to test.
@@ -31,12 +47,14 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if len(args) != 1 {
 			return fmt.Errorf("version does not accept arguments")
 		}
-		fmt.Fprintln(stdout, Version)
+		fmt.Fprintln(stdout, version())
 		return nil
 	case "inspect":
 		return runInspect(ctx, args[1:], stdout, stderr)
 	case "export":
 		return runExport(ctx, args[1:], stdout, stderr)
+	case "list":
+		return runList(ctx, args[1:], stdout, stderr)
 	case "import":
 		return runImport(ctx, args[1:], stdout, stderr)
 	case "convert":
@@ -61,6 +79,8 @@ func runHelp(args []string, stdout io.Writer) error {
 		printInspectUsage(stdout)
 	case "export":
 		printExportUsage(stdout)
+	case "list":
+		printListUsage(stdout)
 	case "import":
 		printImportUsage(stdout)
 	case "convert":
@@ -81,10 +101,11 @@ Usage:
   sesh <command> [options]
 
 Commands:
-  inspect   Check that a file contains valid JSON
+  list      List the sessions recorded for this directory
   export    Convert a harness transcript to a .sesh.json bundle
   import    Read and validate a .sesh.json bundle
   convert   Write a bundle as another harness's native session
+  inspect   Check that a file contains valid JSON
   version   Print the build version
   help      Show command help
 

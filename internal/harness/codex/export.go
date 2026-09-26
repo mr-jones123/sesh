@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -69,13 +68,9 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 // InstallPath places the rollout where Codex looks for it: Codex finds a
 // session by the ID in the file name and registers it on first resume.
 func (Adapter) InstallPath(_ session.Bundle, opts harness.ExportOptions) (string, error) {
-	home := os.Getenv("CODEX_HOME")
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("find codex home: %w", err)
-		}
-		home = filepath.Join(userHome, ".codex")
+	home, err := codexHome()
+	if err != nil {
+		return "", err
 	}
 	local := opts.CreatedAt.Local()
 	name := fmt.Sprintf("rollout-%s-%s.jsonl", local.Format("2006-01-02T15-04-05"), opts.SessionID)

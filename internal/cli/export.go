@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/mr-jones123/sesh/internal/catalog"
 	"github.com/mr-jones123/sesh/internal/redact"
 	"github.com/mr-jones123/sesh/internal/registry"
 	"github.com/mr-jones123/sesh/internal/session"
@@ -21,6 +23,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	harnessName := flags.String("harness", "", "source harness: pi, claude, or codex")
 	output := flags.String("output", "", "output .sesh.json path")
 	noRedact := flags.Bool("no-redact", false, "keep secrets and paths; raw records stay byte-exact")
+	last := flags.Bool("last", false, "export the newest session recorded for the current directory")
 	flags.Usage = func() { printExportUsage(flags.Output()) }
 
 	if err := flags.Parse(args); err != nil {
@@ -29,25 +32,29 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 		return err
 	}
-	if flags.NArg() != 1 {
+	if *last != (flags.NArg() == 0) || flags.NArg() > 1 {
 		flags.Usage()
-		return fmt.Errorf("export expects exactly one source path")
+		return fmt.Errorf("export expects one session path or ID, or -last")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	sourcePath, err := filepath.Abs(flags.Arg(0))
-	if err != nil {
-		return fmt.Errorf("resolve source path: %w", err)
-	}
-
-	adapter, err := registry.Detect(sourcePath)
-	if *harnessName != "" {
-		adapter, err = registry.Find(*harnessName)
-	}
+	source, err := findSource(ctx, flags.Arg(0), *last, *harnessName)
 	if err != nil {
 		return err
+	}
+	sourcePath := source.Path
+	adapter, err := registry.Find(source.Harness)
+	if err != nil {
+		return err
+	}
+	if source.ID != "" {
+		fmt.Fprintf(stdout, "session %s (%s)", source.ID, source.Harness)
+		if source.Prompt != "" {
+			fmt.Fprintf(stdout, ": %s", truncate(source.Prompt, 60))
+		}
+		fmt.Fprintln(stdout)
 	}
 
 	bundle, err := adapter.Import(ctx, sourcePath)
@@ -66,7 +73,13 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	outputPath := *output
-	if outputPath == "" {
+	switch {
+	case outputPath != "":
+	case source.ID != "":
+		// Found by ID or -last: the transcript sits in the harness's own
+		// directory, so the bundle goes to the current one.
+		outputPath = source.Harness + "-" + shortID(source.ID) + ".sesh.json"
+	default:
 		outputPath = sourcePath + ".sesh.json"
 	}
 	file, err := os.Create(outputPath)
@@ -86,6 +99,48 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		printFindings(stdout, findings)
 	}
 	return nil
+}
+
+// findSource resolves export's argument: a transcript path, a session ID or
+// ID prefix, or with last the newest session for the current directory. A
+// source found by path has no ID set.
+func findSource(ctx context.Context, arg string, last bool, harnessName string) (catalog.Entry, error) {
+	if last {
+		dir, err := os.Getwd()
+		if err != nil {
+			return catalog.Entry{}, fmt.Errorf("find current directory: %w", err)
+		}
+		entries, err := catalog.List(ctx, catalog.Query{Dir: dir, Harness: harnessName})
+		if err != nil {
+			return catalog.Entry{}, err
+		}
+		for _, e := range entries {
+			if e.Err == nil {
+				return e, nil
+			}
+		}
+		return catalog.Entry{}, fmt.Errorf("no readable sessions recorded for %s; see sesh list -all", displayPath(dir))
+	}
+
+	path, err := filepath.Abs(arg)
+	if err != nil {
+		return catalog.Entry{}, fmt.Errorf("resolve source path: %w", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		name := harnessName
+		if name == "" {
+			adapter, err := registry.Detect(path)
+			if err != nil {
+				return catalog.Entry{}, err
+			}
+			name = adapter.Name()
+		}
+		return catalog.Entry{Harness: name, Path: path}, nil
+	}
+	if strings.ContainsAny(arg, `/\`) || strings.HasSuffix(arg, ".jsonl") {
+		return catalog.Entry{}, fmt.Errorf("source %q: no such file", arg)
+	}
+	return catalog.Find(arg, harnessName)
 }
 
 // printFindings prints how many replacements each rule made, most first.
@@ -111,9 +166,15 @@ func printFindings(w io.Writer, findings []redact.Finding) {
 }
 
 func printExportUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage: sesh export [options] <session.jsonl>
+	fmt.Fprint(w, `Usage: sesh export [options] <session.jsonl | session ID>
+       sesh export [options] -last
 
 Converts a local harness transcript into a portable .sesh.json bundle.
+
+The session can be a transcript path, a session ID or its first characters
+as shown by sesh list, or -last for the newest session recorded for the
+current directory. A session found by ID or -last is written to
+<harness>-<id>.sesh.json in the current directory.
 
 Secrets, email addresses and home-directory paths are replaced in the bundle
 by default, in both the event timeline and the raw source lines: API keys and
@@ -124,8 +185,10 @@ the same bundle. They catch known formats only: review a bundle before
 sharing it. The source transcript is never modified.
 
 Options:
-  -harness name  pi, claude, or codex; auto-detected when omitted
-  -output path   output path; defaults to <source>.sesh.json
+  -harness name  pi, claude, or codex; auto-detected from a path, and narrows
+                 an ID or -last to one harness
+  -last          export the newest session recorded for the current directory
+  -output path   output path; defaults to <source>.sesh.json for a path
   -no-redact     keep everything; raw records stay byte-exact
 `)
 }
