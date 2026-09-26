@@ -2,17 +2,27 @@
 
 Portable import and export for AI coding sessions.
 
+## Install
+
+Requires Go 1.26.6 or newer (older Go toolchains since 1.21 download it automatically).
+
+```sh
+go install github.com/mr-jones123/sesh/cmd/sesh@latest
+sesh help
+```
+
+Or build from a clone with `go build ./cmd/sesh`.
+
 ## Try it
 
 ```sh
-go run ./cmd/sesh help
-go run ./cmd/sesh export --harness claude path/to/session.jsonl
-go run ./cmd/sesh import path/to/session.jsonl.sesh.json
-go run ./cmd/sesh convert --target pi --model openai-codex/gpt-5.6-sol path/to/session.jsonl.sesh.json
+sesh export --harness claude path/to/session.jsonl
+sesh import path/to/session.jsonl.sesh.json
+sesh convert --target pi --model openai-codex/gpt-5.6-sol path/to/session.jsonl.sesh.json
 pi --session path/to/session.jsonl.pi.jsonl
-go run ./cmd/sesh convert --target codex --install path/to/session.jsonl.sesh.json
+sesh convert --target codex --install path/to/session.jsonl.sesh.json
 codex resume <printed session id>
-go run ./cmd/sesh convert --target claude --install path/to/session.jsonl.sesh.json
+sesh convert --target claude --install path/to/session.jsonl.sesh.json
 claude --resume <printed session id>   # from the session's workspace
 ```
 
@@ -53,3 +63,13 @@ Pi opens any file with `pi --session <file>`, so nothing is installed. Codex and
 - Claude: `$CLAUDE_CONFIG_DIR/projects/<workspace, non-alphanumerics as ->/<id>.jsonl` (default `~/.claude`). Run `claude --resume <id>` from that workspace.
 
 Each conversion gets a new session ID and never overwrites an existing session.
+
+## Privacy
+
+Session transcripts contain prompts, source code, tool arguments, command output, local paths, and anything an agent read, including API keys and `.env` files. A bundle keeps all of it: `raw_records` holds every source line unchanged.
+
+Sesh does not redact anything yet. Treat bundles and converted sessions as private files, and do not share or upload them until you have reviewed them yourself.
+
+## License
+
+[MIT](LICENSE)
