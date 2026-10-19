@@ -46,10 +46,10 @@ func (e outEntry) message() map[string]any {
 	return m
 }
 
-func export(t *testing.T, bundle session.Bundle, opts harness.ExportOptions) []outEntry {
+func export(t *testing.T, source session.Session, opts harness.ExportOptions) []outEntry {
 	t.Helper()
 	var out bytes.Buffer
-	if err := New().Export(context.Background(), bundle, opts, &out); err != nil {
+	if err := New().Export(context.Background(), source, opts, &out); err != nil {
 		t.Fatal(err)
 	}
 	var entries []outEntry
@@ -82,7 +82,7 @@ func roles(entries []outEntry) []string {
 }
 
 func TestExportTranslatesClaudeSession(t *testing.T) {
-	bundle := session.Bundle{Session: session.Session{ID: "c1", Harness: "claude", Workspace: "/work/app", CreatedAt: t0, Events: chain(
+	source := session.Session{ID: "c1", Title: "Saved source title", Harness: "claude", Workspace: "/work/app", CreatedAt: t0, Events: chain(
 		text(session.RoleUser, "Fix it"),
 		session.Event{Type: session.EventReasoning, Role: session.RoleAssistant, Text: "check tests", Model: "claude-x"},
 		call("t1", "Bash", `{"command":"go test ./...","description":"Run tests"}`),
@@ -90,15 +90,16 @@ func TestExportTranslatesClaudeSession(t *testing.T) {
 		call("t2", "WebSearch", `{"query":"go flaky test"}`),
 		result("t2", "3 results"),
 		text(session.RoleAssistant, "Fixed."),
-	)}}
+	)}
 
-	entries := export(t, bundle, harness.ExportOptions{Model: "openai-codex/gpt-x", Workspace: "/other"})
+	entries := export(t, source, harness.ExportOptions{Model: "openai-codex/gpt-x", Workspace: "/other", SessionID: "new-pi", CreatedAt: t0})
 
 	want := []string{"user:text", "assistant:thinking,toolCall", "toolResult:text", "assistant:text", "assistant:text", "model_change"}
 	if got := roles(entries); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("entries = %v, want %v", got, want)
 	}
-	if h := entries[0]; h["type"] != "session" || h["version"] != 3.0 || h["cwd"] != "/other" {
+	if h := entries[0]; h["type"] != "session" || h["version"] != 3.0 || h["id"] != "new-pi" ||
+		h["cwd"] != "/other" || h["title"] != "Saved source title" {
 		t.Fatalf("header = %v", h)
 	}
 	// Every entry chains to the one before it, so Pi's leaf path covers all.
@@ -128,24 +129,25 @@ func TestExportTranslatesClaudeSession(t *testing.T) {
 	}
 }
 
-func TestExportCopiesPiSourceVerbatim(t *testing.T) {
-	lines := []string{`{"type":"session","version":3,"id":"p1",  "cwd":"/w"}`, `{"type":"custom","id":"x","data":{"k":"<v>"}}`}
-	bundle := session.Bundle{
-		Session:    session.Session{ID: "p1", Harness: "pi"},
-		RawRecords: []session.RawLine{{Line: 1, Record: lines[0]}, {Line: 2, Record: lines[1]}},
-	}
-	var out bytes.Buffer
-	if err := New().Export(context.Background(), bundle, harness.ExportOptions{}, &out); err != nil {
-		t.Fatal(err)
-	}
-	if want := strings.Join(lines, "\n") + "\n"; out.String() != want {
-		t.Fatalf("output = %q, want %q", out.String(), want)
+func TestExportRejectsMalformedModel(t *testing.T) {
+	err := New().Export(context.Background(), session.Session{Harness: "claude"}, harness.ExportOptions{Model: "gpt-x"}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("Export accepted a model without a provider")
 	}
 }
 
-func TestExportRejectsMalformedModel(t *testing.T) {
-	err := New().Export(context.Background(), session.Bundle{Session: session.Session{Harness: "claude"}}, harness.ExportOptions{Model: "gpt-x"}, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("Export accepted a model without a provider")
+func TestInstallPath(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", "/pi")
+	created := time.Date(2026, 9, 26, 3, 30, 0, 0, time.UTC)
+	got, err := New().InstallPath(
+		session.Session{Workspace: "/work/original"},
+		harness.ExportOptions{Workspace: "/work/app", SessionID: "new-pi", CreatedAt: created},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/pi/sessions/--work-app--/2026-09-26T03-30-00-000Z_new-pi.jsonl"
+	if got != want {
+		t.Fatalf("InstallPath = %q, want %q", got, want)
 	}
 }

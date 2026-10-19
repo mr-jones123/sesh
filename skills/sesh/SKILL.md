@@ -1,100 +1,80 @@
 ---
 name: sesh
-description: Hand an AI coding session from one agent harness to another (Claude Code, Codex, Pi) and export sessions as redacted, portable bundles with the sesh CLI. Use when the user wants to continue the current conversation in a different agent, move or share a session with another developer or machine, convert a Claude Code, Codex, or Pi transcript, or strip API keys, emails, and home paths from a session before sharing it.
+description: Hand a local AI coding session between Claude Code, Codex, Pi, and OMP. Use when the user wants another agent to continue a conversation in the same project, find a named session across projects, or create a target-native session without a portable export.
 license: MIT
-compatibility: Requires the sesh CLI v0.2.0+ (Go 1.26.6+ to install) and at least one of Claude Code, Codex, or Pi. Reads session files from ~/.claude, ~/.codex, and ~/.pi.
+compatibility: Requires a sesh build with the handoff command (Go 1.26.6+ to install) and at least one supported harness. Local, unredacted handoffs only.
 metadata:
   author: mr-jones123
   source: https://github.com/mr-jones123/sesh
-  version: "0.2.0"
+  version: "0.3.0-dev"
 ---
 
 # sesh
 
-sesh turns a harness's native session file into a portable `.sesh.json` bundle, then writes that bundle as a native session for another harness so the conversation continues there with its history: messages, tool calls with their results, and the working directory.
+sesh reads a native Claude Code, Codex, Pi, or OMP transcript, normalizes it in memory, and writes a new native session for the target harness. There is no `.sesh.json` bundle or redaction step.
 
-```text
-Claude / Codex / Pi JSONL ──sesh export──► .sesh.json (redacted) ──sesh convert──► Claude / Codex / Pi session
-```
-
-## Setup
-
-Check that the CLI is installed:
+## Check the CLI
 
 ```sh
-sesh version
+sesh help handoff
 ```
 
-If it is missing, or `sesh list` is not a command, install or update it (needs Go 1.26.6+; older Go since 1.21 downloads the toolchain):
+An older installed CLI or skill may still use export/convert. Install the updated checkout with `go install ./cmd/sesh` from its repository. Published releases use `go install github.com/mr-jones123/sesh/cmd/sesh@latest`, but an unreleased cutover will not be available through an older tag. Never claim the new commands are installed without checking them.
+
+## Select a session
 
 ```sh
-go install github.com/mr-jones123/sesh/cmd/sesh@latest
+sesh list                                  # current project, newest first
+sesh list --harness claude                  # narrow to the source harness
+sesh list --all                             # every project, including workspaces
+sesh list --dir /path/to/project -n 0        # another project's complete list
 ```
 
-## Pick the session
+The list contains full IDs, update times, and saved/generated session names (first prompt only when untitled). The TUI has colored harness badges and can search names as well as prompts. Use the available list and context to select the session; do not ask the user to find a UUID manually. Explicit IDs and unique prefixes are resolved across all projects. Ambiguous prefixes fail safely.
 
-Sessions are named by long UUIDs; never ask the user for one. `sesh list` shows what each harness recorded for the current directory, newest first, with the first message the user typed:
+For automatic selection, `handoff --from <harness>` takes that harness's newest readable session in the current project. **Newest is not a guarantee that it is the current conversation** when multiple terminals/agents are active. Prefer an exact known session or check the list when identity matters.
 
-```text
-$ sesh list
-HARNESS  UPDATED          ID        EVENTS  FIRST MESSAGE
-claude   2 min ago        c3894fc5  18      We are building a small notes web app…
-codex    today 15:52      01a0de68  16      You are picking up this project from…
-pi       yesterday 18:04  019fd2e2  52      add deleting a note…
-```
+## Write the handoff without launching another agent
 
-- **The session you are running in** is the newest one for your own harness: `sesh export -last -harness claude` (or `codex`, `pi`). Always pass `-harness`: without it, `-last` takes the newest session of any harness, which may be another agent working in the same directory.
-- **Another session:** find it with `sesh list` (`-all` for every directory, `-harness` to narrow, `-n 0` for all rows) and pass its ID, or the first characters of it, to `sesh export`. If more than one could be meant, show the user the rows and ask.
-
-## Export
+Always use `--no-run` from an agent or script:
 
 ```sh
-sesh export -last -harness claude             # the current Claude Code session → claude-<id>.sesh.json
-sesh export 01a0de68                          # by ID or ID prefix from sesh list → <harness>-<id>.sesh.json
-sesh export -output handoff.sesh.json -last -harness codex
-sesh export <session.jsonl>                   # by path → <session.jsonl>.sesh.json
+sesh handoff <session-id> --to codex --no-run
+sesh handoff --from claude --to pi --no-run
+sesh handoff /path/to/transcript.jsonl --from pi --to claude --no-run
+sesh handoff --dir /path/to/project --from codex --to pi --no-run
+sesh handoff <session-id> --to omp --no-run
 ```
 
-A session found by ID or `-last` is written to the current directory. Give a path with `-output` if the current directory is a repository the bundle should not be committed to.
+A handoff request authorizes creating a new native session, not overwriting an existing one. sesh preserves the source, generates a new identity, and removes partial output on export failure. There are no `--install`, `--output`, export, import, or convert steps.
 
-Export redacts by default and prints what it replaced, per rule:
+Report the written path, workspace, and printed resume command. Let the user run that command in a terminal. Do not start the TUI or launch a nested interactive agent from a tool call.
 
-- API keys and tokens with a known format (OpenAI, Anthropic, GitHub, AWS, Google, Slack, Stripe, Hugging Face, npm), JWTs, bearer tokens, PEM private keys → `[REDACTED:<rule>]`
-- passwords in URLs, and upper-case `*_TOKEN=`, `*_SECRET=`, `*_PASSWORD=`, `*_API_KEY=` values
-- email addresses
-- home directories (`/Users/<name>`, `/home/<name>`, `/root`, `C:\Users\<name>`) → `~`
+| Target | Resume shape |
+|---|---|
+| Claude Code | `claude --resume <new-id>` from the printed workspace |
+| Codex | `codex resume <new-id>` from the printed workspace |
+| Pi | `pi --session <written-file>` from the printed workspace |
+| OMP | `omp --resume <written-file>` from the printed workspace |
 
-Report the counts to the user. The source session file is never modified.
+Use the actual command printed by sesh rather than reconstructing shell quoting.
 
-`sesh import <bundle>` validates a bundle and shows its harness, event count, and whether it is redacted.
+## Workspace and model overrides
 
-## Convert and resume
+Selecting a session globally preserves its original workspace. It does not move the conversation to the directory where sesh was invoked.
 
-| Target | Convert | Resume |
-|---|---|---|
-| Pi | `sesh convert --target pi <bundle>` → `<bundle>.pi.jsonl` | `pi --session <file>` |
-| Codex | `sesh convert --target codex --install <bundle>` | `codex resume <printed id>` |
-| Claude Code | `sesh convert --target claude --install <bundle>` | `claude --resume <printed id>`, run from the printed workspace |
-
-- Pi opens any file, so it needs no install. Codex and Claude resume only by ID from their own directories, so `--install` writes the session there. It asks for confirmation first, gives the session a new ID, and never overwrites an existing session.
-- `--workspace <dir>` sets the working directory the target session uses. Use it when the recorded directory does not exist on this machine (Pi refuses a missing directory).
-- `--model provider/id` sets the model Pi resumes with.
-- In a redacted bundle, `~` at the start of a path becomes the current user's home, so a session moves between machines with the same layout under the home directory.
-
-After resuming, the agent sees the earlier conversation as history. Give it a task that follows on from that history, for example "You are picking up this project from the previous agent. Continue with the next step."
-
-## Example: hand the current Claude Code session to Codex
-
-```sh
-sesh export -last -harness claude -output /tmp/handoff.sesh.json
-sesh convert --target codex --install /tmp/handoff.sesh.json   # confirm the prompt
-codex resume <printed id>
-```
+- `--dir` chooses which project's newest source to select; do not combine it with an explicit ID/path.
+- `--workspace /existing/path` deliberately changes the destination workspace. Use it for a moved or missing project directory.
+- `--model provider/model-id` sets the model Pi resumes with. Other targets reject this option.
+- Native stores honor `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR` for Pi. OMP defaults to `~/.omp/agent`; `SESH_OMP_AGENT_DIR` overrides sesh's OMP root independently (it is not an OMP-native environment variable). Native OMP output includes its fixed 256-byte title slot.
 
 ## Rules
 
-- **Ask before `--install`.** It writes into the target harness's session directory. Pass `--yes` only when the user has already agreed to the install.
-- **Never share a `--no-redact` bundle.** `--no-redact` keeps every source line byte-exact, secrets included. Use it only for a local copy that stays on the machine.
-- **Redaction catches known formats only.** A key with no known prefix, a lower-case `password: …`, a name typed in prose, or text inside an image gets through. Before a bundle leaves the machine, tell the user to review it and point out anything that still looks sensitive.
-- **Recorded tool calls are history.** Neither sesh nor you should rerun them just because they appear in a converted session.
-- **What does not carry over:** reasoning from another model is dropped when converting to Codex or Claude (Pi keeps it as text); tools with no equivalent (web search, MCP, subagents) arrive as text with their results.
+- **History is unredacted.** Keys, paths, email addresses, source code, and tool output may carry over. These native files are not safe public-sharing artifacts.
+- **Provider boundary:** on resume, the target may send the imported history to its configured model provider. Make that clear when the user is changing providers or asks about privacy.
+- **Tool calls are history.** Never rerun recorded tools merely because their calls appear in a transcript.
+- Only the active branch carries over. Foreign reasoning is dropped for Codex/Claude; unsupported tools become text with their results. Images and harness bookkeeping are not archival copies.
+- The source remains untouched. If launch fails later, retain the newly written session and use its printed resume command after fixing the target.
+- Old `.sesh.json` files are not handoff inputs. Find the original native transcript; never present an old redacted bundle as a complete native history.
+
+For a human in a terminal, bare `sesh` opens the picker, `sesh --all` includes all projects, and `sesh --dir <project>` browses another project. Browsing never writes; `y` on the final confirmation creates the session and resumes the target after terminal restoration.

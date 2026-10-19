@@ -74,7 +74,7 @@ func (r outRecord) blocks() []contentBlock {
 func export(t *testing.T, s session.Session, o harness.ExportOptions) (string, []outRecord) {
 	t.Helper()
 	var out bytes.Buffer
-	if err := New().Export(context.Background(), session.Bundle{Session: s}, o, &out); err != nil {
+	if err := New().Export(context.Background(), s, o, &out); err != nil {
 		t.Fatal(err)
 	}
 	var records []outRecord
@@ -202,11 +202,11 @@ func TestExportReadsBackThroughImporter(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := New().Import(context.Background(), path)
+	s, err := New().Import(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	events := bundle.Session.Events
+	events := s.Events
 	if len(events) != 4 || events[1].Call.Name != "Read" || events[2].Result.CallID != events[1].Call.ID || events[2].Result.Output != "package main" {
 		t.Fatalf("re-imported events = %+v", events)
 	}
@@ -214,15 +214,15 @@ func TestExportReadsBackThroughImporter(t *testing.T) {
 
 func TestInstallPath(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/claude")
-	bundle := session.Bundle{Session: session.Session{Workspace: "/no/such/projects i like/Soup-MLX"}}
-	got, err := New().InstallPath(bundle, harness.ExportOptions{SessionID: "abc"})
+	source := session.Session{Workspace: "/no/such/projects i like/Soup-MLX"}
+	got, err := New().InstallPath(source, harness.ExportOptions{SessionID: "abc"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := "/claude/projects/-no-such-projects-i-like-Soup-MLX/abc.jsonl"; got != want {
 		t.Fatalf("InstallPath = %s, want %s", got, want)
 	}
-	if _, err := New().InstallPath(session.Bundle{}, harness.ExportOptions{SessionID: "abc"}); err == nil {
+	if _, err := New().InstallPath(session.Session{}, harness.ExportOptions{SessionID: "abc"}); err == nil {
 		t.Fatal("InstallPath accepted an empty workspace")
 	}
 }

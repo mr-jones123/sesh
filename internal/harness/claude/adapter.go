@@ -21,8 +21,7 @@ func (Adapter) Detect(path string) bool {
 }
 
 // record is one Claude Code JSONL line. Only user and assistant records carry
-// conversation; other types (attachment, last-prompt, file-history-*, ...)
-// stay in RawRecords.
+// conversation.
 type record struct {
 	Type             string   `json:"type"`
 	UUID             string   `json:"uuid"`
@@ -30,6 +29,8 @@ type record struct {
 	SessionID        string   `json:"sessionId"`
 	CWD              string   `json:"cwd"`
 	Timestamp        string   `json:"timestamp"`
+	AITitle          string   `json:"aiTitle"`
+	CustomTitle      string   `json:"customTitle"`
 	IsMeta           bool     `json:"isMeta"`
 	IsSidechain      bool     `json:"isSidechain"`
 	IsCompactSummary bool     `json:"isCompactSummary"`
@@ -54,23 +55,22 @@ type block struct {
 	IsError   bool            `json:"is_error"`
 }
 
-func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) {
-	bundle := session.Bundle{Session: session.Session{Harness: "claude"}}
-	s := &bundle.Session
+func (Adapter) Import(ctx context.Context, path string) (session.Session, error) {
+	s := session.Session{Harness: "claude"}
 	lastEvent := map[string]string{} // record uuid -> last event it produced
 	callNames := map[string]string{} // tool_use id -> tool name
 	// The first conversation record decides which thread this file holds:
 	// main sessions skip inline subagent (sidechain) records, while a
 	// subagents/agent-*.jsonl file is entirely sidechain and keeps them.
 	threadKnown, sidechainThread := false, false
+	var titles nativeTitles
 
 	err := jsonl.Read(ctx, path, func(line jsonl.Line) error {
-		bundle.RawRecords = append(bundle.RawRecords, session.RawLine{Line: line.Number, Record: string(line.Raw)})
-
 		var r record
 		if err := json.Unmarshal(line.Raw, &r); err != nil {
 			return fmt.Errorf("decode record: %w", err)
 		}
+		titles.observe(r)
 		if s.ID == "" {
 			s.ID = r.SessionID
 		}
@@ -85,7 +85,6 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 			ID:        r.UUID,
 			ParentID:  lastEvent[r.ParentUUID],
 			CreatedAt: harness.ParseTime(r.Timestamp),
-			RawLine:   line.Number,
 		}
 		var events []session.Event
 		conversation := (r.Type == "user" || r.Type == "assistant") && r.Message != nil
@@ -117,15 +116,98 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 		return nil
 	})
 	if err != nil {
-		return session.Bundle{}, err
+		return session.Session{}, err
 	}
+	s.Title = titles.title()
 	if s.ID == "" {
-		return session.Bundle{}, fmt.Errorf("session id not found")
+		return session.Session{}, fmt.Errorf("session id not found")
 	}
 	if s.CreatedAt.IsZero() {
 		s.CreatedAt = harness.FileTime(path)
 	}
-	return bundle, nil
+	return s, nil
+}
+
+func (Adapter) Summarize(ctx context.Context, path string) (harness.Summary, error) {
+	var summary harness.Summary
+	threadKnown, sidechainThread := false, false
+	err := jsonl.ReadUntil(ctx, path, func(line jsonl.Line) (bool, error) {
+		var r record
+		if err := json.Unmarshal(line.Raw, &r); err != nil {
+			return false, fmt.Errorf("decode record: %w", err)
+		}
+		if summary.ID == "" {
+			summary.ID = r.SessionID
+		}
+		if summary.Workspace == "" {
+			summary.Workspace = r.CWD
+		}
+		conversation := (r.Type == "user" || r.Type == "assistant") && r.Message != nil
+		if conversation && !threadKnown {
+			threadKnown, sidechainThread = true, r.IsSidechain
+		}
+		if summary.Prompt == "" && conversation && !r.IsMeta && !r.IsCompactSummary &&
+			r.IsSidechain == sidechainThread && r.Message.Role == string(session.RoleUser) {
+			blocks, err := decodeBlocks(r.Message.Content)
+			if err != nil {
+				return false, err
+			}
+			summary.Prompt = harness.Prompt(joinText(blocks))
+		}
+		return summary.ID != "" && summary.Workspace != "" && summary.Prompt != "", nil
+	})
+	if err != nil {
+		return harness.Summary{}, err
+	}
+	title, err := scanTitle(ctx, path)
+	if err != nil {
+		return harness.Summary{}, err
+	}
+	summary.Title = title
+	if summary.ID == "" {
+		return harness.Summary{}, fmt.Errorf("session id not found")
+	}
+	return summary, nil
+}
+
+type nativeTitles struct {
+	generated string
+	custom    string
+}
+
+func (t *nativeTitles) observe(r record) {
+	switch r.Type {
+	case "ai-title":
+		t.generated = strings.TrimSpace(r.AITitle)
+	case "custom-title":
+		t.custom = strings.TrimSpace(r.CustomTitle)
+	}
+}
+
+func (t nativeTitles) title() string {
+	if t.custom != "" {
+		return t.custom
+	}
+	return t.generated
+}
+
+func scanTitle(ctx context.Context, path string) (string, error) {
+	var titles nativeTitles
+	err := jsonl.ScanMetadata(ctx, path, func(line jsonl.MetadataLine) error {
+		kind, _ := jsonl.StringField(line.Prefix, "type")
+		switch kind {
+		case "ai-title":
+			if title, ok := jsonl.StringField(line.Prefix, "aiTitle"); ok {
+				titles.generated = strings.TrimSpace(title)
+			}
+		case "custom-title":
+			if title, ok := jsonl.StringField(line.Prefix, "customTitle"); ok {
+				titles.custom = strings.TrimSpace(title)
+			}
+		}
+		return nil
+	})
+	return titles.title(), err
 }
 
 func messageEvents(base session.Event, r record, callNames map[string]string) ([]session.Event, error) {
@@ -169,7 +251,7 @@ func messageEvents(base session.Event, r record, callNames map[string]string) ([
 			event.Type, event.Role = session.EventToolResult, session.RoleTool
 			event.Result = &session.ToolResult{CallID: b.ToolUseID, Name: callNames[b.ToolUseID], Output: joinText(output), IsError: b.IsError}
 		default:
-			continue // Images are kept in RawRecords until assets are supported.
+			continue // Images are not represented in the neutral session.
 		}
 		events = append(events, event)
 	}

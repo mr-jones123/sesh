@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// CurrentFormatVersion 2 splits tool calls from results and stores raw lines
-// verbatim. Version 1 bundles must be re-exported from their source.
-const CurrentFormatVersion = 2
+// Session is the harness-neutral conversation used only while handing a
+// local transcript directly to another harness.
 
 type Session struct {
 	ID        string    `json:"id"`
@@ -28,8 +27,6 @@ type Event struct {
 	Text      string      `json:"text,omitempty"`
 	Call      *ToolCall   `json:"call,omitempty"`
 	Result    *ToolResult `json:"result,omitempty"`
-	// RawLine is the source line number in Bundle.RawRecords, not a copy.
-	RawLine int `json:"raw_line,omitempty"`
 }
 
 type EventType string
@@ -62,29 +59,4 @@ type ToolResult struct {
 	Name    string `json:"name,omitempty"`
 	Output  string `json:"output,omitempty"`
 	IsError bool   `json:"is_error,omitempty"`
-}
-
-type Source struct {
-	Path       string `json:"path,omitempty"`
-	Repository string `json:"repository,omitempty"`
-	CommitSHA  string `json:"commit_sha,omitempty"`
-	Dirty      bool   `json:"dirty,omitempty"`
-}
-
-type Bundle struct {
-	FormatVersion int    `json:"format_version"`
-	Source        Source `json:"source,omitempty"`
-	// Redacted means secrets, emails and home directories were replaced
-	// (home directories with ~), so raw records are no longer byte-exact.
-	Redacted   bool      `json:"redacted,omitempty"`
-	Session    Session   `json:"session"`
-	RawRecords []RawLine `json:"raw_records,omitempty"`
-}
-
-// RawLine keeps one source line verbatim. Record is a string, not
-// json.RawMessage: encoding/json re-indents and escapes embedded raw JSON,
-// while a JSON string decodes back to the exact original bytes.
-type RawLine struct {
-	Line   int    `json:"line"`
-	Record string `json:"record"`
 }

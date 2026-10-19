@@ -26,13 +26,12 @@ func TestImportNormalizesRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bundle, err := New().Import(context.Background(), path)
+	s, err := New().Import(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := bundle.Session
-	if s.ID != "codex-1" || s.Workspace != "/work/app" || len(bundle.RawRecords) != 10 {
-		t.Fatalf("session = %#v, raw = %d", s, len(bundle.RawRecords))
+	if s.ID != "codex-1" || s.Workspace != "/work/app" {
+		t.Fatalf("session = %#v", s)
 	}
 	// event_msg duplicates the user message and is skipped.
 	if len(s.Events) != 7 {
@@ -59,5 +58,145 @@ func TestImportNormalizesRollout(t *testing.T) {
 	// Some rollouts send arguments as an object rather than JSON text.
 	if string(image.Call.Args) != `{"path":"a.png"}` {
 		t.Fatalf("object args = %s", image.Call.Args)
+	}
+}
+
+func TestSummarizeUsesTypedPromptAfterInjectedContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	data := `{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"codex-1","cwd":"/work/app"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\nignore"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"files\n\n## My request for Codex:\nFix the bug"}]}}
+{invalid after prompt
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New().Summarize(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "codex-1" || got.Workspace != "/work/app" || got.Prompt != "Fix the bug" {
+		t.Fatalf("summary = %#v", got)
+	}
+}
+
+func TestSummarizeWithoutPromptReturnsMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	data := `{"type":"session_meta","payload":{"id":"codex-empty","cwd":"/work/empty"}}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New().Summarize(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "codex-empty" || got.Workspace != "/work/empty" || got.Prompt != "" {
+		t.Fatalf("summary = %#v", got)
+	}
+}
+
+func TestSessionIndexTitlesUseFilenameIDsAndRefresh(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	const id = "01a1213b-323c-7861-9339-e3abf9f712f6"
+	path := filepath.Join(home, "sessions", "2026", "10", "09", "rollout-2026-10-09T00-00-00-"+id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"type":"session_meta","payload":{"id":"different-payload-id","cwd":"/work/app"}}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(home, "session_index.jsonl")
+	if err := os.WriteFile(index, []byte(
+		`{"id":"`+id+`","thread_name":"Initial name","updated_at":"2026-10-09T00:00:00Z"}`+"\n"+
+			`{"id":"`+id+`","thread_name":"Saved rename","updated_at":"2026-10-09T00:01:00Z"}`+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := New().Sessions("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].ID != id || files[0].Title != "Saved rename" {
+		t.Fatalf("files = %#v", files)
+	}
+
+	file, err := os.OpenFile(index, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"id":"` + id + `","thread_name":"Newest rename"}` + "\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := New().Sessions("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 1 || refreshed[0].Title != "Newest rename" {
+		t.Fatalf("refreshed files = %#v", refreshed)
+	}
+
+	imported, err := New().Import(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.ID != "different-payload-id" || imported.Title != "" {
+		t.Fatalf("imported mismatched metadata = %#v", imported)
+	}
+	if err := os.WriteFile(path, []byte(`{"type":"session_meta","payload":{"id":"`+id+`","cwd":"/work/app"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imported, err = New().Import(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Title != "Newest rename" {
+		t.Fatalf("import title = %q", imported.Title)
+	}
+	summary, err := New().Summarize(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Title != "Newest rename" {
+		t.Fatalf("summary title = %q", summary.Title)
+	}
+}
+
+func TestSessionIndexMissingFallsBackToInlineMetadata(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	const id = "01a1213b-323c-7861-9339-e3abf9f712f6"
+	path := filepath.Join(home, "sessions", "2026", "10", "09", "rollout-2026-10-09T00-00-00-"+id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"type":"session_meta","payload":{"id":"` + id + `","cwd":"/work/app","thread_name":"Inline title"}}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := New().Sessions("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Title != "" {
+		t.Fatalf("files without index = %#v", files)
+	}
+	summary, err := New().Summarize(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := New().Import(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Title != "Inline title" || imported.Title != "Inline title" {
+		t.Fatalf("summary title = %q, import title = %q", summary.Title, imported.Title)
 	}
 }

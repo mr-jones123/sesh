@@ -51,7 +51,7 @@ type rolloutLine struct {
 func export(t *testing.T, s session.Session) []rolloutLine {
 	t.Helper()
 	var out bytes.Buffer
-	if err := New().Export(context.Background(), session.Bundle{Session: s}, opts, &out); err != nil {
+	if err := New().Export(context.Background(), s, opts, &out); err != nil {
 		t.Fatal(err)
 	}
 	var lines []rolloutLine
@@ -171,7 +171,7 @@ func TestExportSanitizesCallIDs(t *testing.T) {
 }
 
 func TestExportRequiresSessionID(t *testing.T) {
-	err := New().Export(context.Background(), session.Bundle{}, harness.ExportOptions{}, &bytes.Buffer{})
+	err := New().Export(context.Background(), session.Session{}, harness.ExportOptions{}, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("Export accepted options without a session ID")
 	}
@@ -180,7 +180,7 @@ func TestExportRequiresSessionID(t *testing.T) {
 func TestInstallPath(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/codex")
 	created := time.Date(2026, 9, 26, 3, 30, 0, 0, time.Local)
-	got, err := New().InstallPath(session.Bundle{}, harness.ExportOptions{SessionID: "abc", CreatedAt: created})
+	got, err := New().InstallPath(session.Session{}, harness.ExportOptions{SessionID: "abc", CreatedAt: created})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,6 +44,8 @@ func Parse(harness, name string, args json.RawMessage) Action {
 	switch harness {
 	case "pi":
 		return parsePi(name, args)
+	case "omp":
+		return parseOMP(name, args)
 	case "claude":
 		return parseClaude(name, args)
 	case "codex":
@@ -82,6 +84,93 @@ func parsePi(name string, args json.RawMessage) Action {
 		return edit(a.Path, edits)
 	}
 	return other
+}
+
+// parseOMP accepts only Pi-compatible argument shapes. OMP-specific options
+// must not disappear during handoff: cwd/workdir is preserved for shell
+// commands, while unsupported options and hashline edits stay as source text.
+func parseOMP(name string, args json.RawMessage) Action {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(args, &fields) != nil || fields == nil {
+		return other
+	}
+	switch name {
+	case "bash":
+		if !hasOnlyKeys(fields, "command", "cwd", "workdir", "i") {
+			return other
+		}
+		var a struct {
+			Command string `json:"command"`
+			CWD     string `json:"cwd"`
+			Workdir string `json:"workdir"`
+		}
+		if json.Unmarshal(args, &a) != nil || a.Command == "" ||
+			(a.CWD != "" && a.Workdir != "" && a.CWD != a.Workdir) {
+			return other
+		}
+		dir := a.CWD
+		if dir == "" {
+			dir = a.Workdir
+		}
+		if dir != "" {
+			return exec("cd " + ShellQuote(dir) + " && " + a.Command)
+		}
+		return exec(a.Command)
+	case "read":
+		if !hasOnlyKeys(fields, "path", "offset", "limit", "i") {
+			return other
+		}
+	case "write":
+		if !hasOnlyKeys(fields, "path", "content", "i") {
+			return other
+		}
+	case "edit":
+		if !hasOnlyKeys(fields, "path", "edits", "i") || !piCompatibleEdits(fields["edits"]) {
+			return other
+		}
+	default:
+		return other
+	}
+	action := parsePi(name, args)
+	if strings.ContainsAny(action.Path, ":?#") {
+		return other // OMP selectors, URLs, and archive members are not plain file paths.
+	}
+	return action
+}
+
+func hasOnlyKeys(fields map[string]json.RawMessage, allowed ...string) bool {
+	for key := range fields {
+		found := false
+		for _, candidate := range allowed {
+			if key == candidate {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func piCompatibleEdits(raw json.RawMessage) bool {
+	var edits []map[string]json.RawMessage
+	if json.Unmarshal(raw, &edits) != nil || len(edits) == 0 {
+		return false
+	}
+	for _, edit := range edits {
+		if !hasOnlyKeys(edit, "oldText", "newText") {
+			return false
+		}
+		if _, ok := edit["oldText"]; !ok {
+			return false
+		}
+		if _, ok := edit["newText"]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func parseClaude(name string, args json.RawMessage) Action {

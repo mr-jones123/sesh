@@ -27,7 +27,7 @@ func codexHome() (string, error) {
 // Sessions lists sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl. Codex files
 // rollouts by date, not directory, so with dir set each rollout's first line
 // (its session_meta record) is read for the cwd it started in.
-func (Adapter) Sessions(dir string) ([]harness.SessionFile, error) {
+func (a *Adapter) Sessions(dir string) ([]harness.SessionFile, error) {
 	home, err := codexHome()
 	if err != nil {
 		return nil, err
@@ -36,6 +36,11 @@ func (Adapter) Sessions(dir string) ([]harness.SessionFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	titles, err := sessionTitles(home)
+	if err != nil {
+		return nil, err
+	}
+	a.titles, a.titlesLoaded = titles, true
 	var dirs []string
 	if dir != "" {
 		dirs = harness.SameDirs(dir)
@@ -45,7 +50,8 @@ func (Adapter) Sessions(dir string) ([]harness.SessionFile, error) {
 		if dirs != nil && !slices.Contains(dirs, startDir(path)) {
 			continue
 		}
-		files = append(files, harness.SessionFile{Path: path, ID: rolloutID(path)})
+		id := rolloutID(path)
+		files = append(files, harness.SessionFile{Path: path, ID: id, Title: titles[id]})
 	}
 	return files, nil
 }

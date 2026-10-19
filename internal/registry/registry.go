@@ -7,17 +7,18 @@ import (
 	"github.com/mr-jones123/sesh/internal/harness"
 	"github.com/mr-jones123/sesh/internal/harness/claude"
 	"github.com/mr-jones123/sesh/internal/harness/codex"
+	"github.com/mr-jones123/sesh/internal/harness/omp"
 	"github.com/mr-jones123/sesh/internal/harness/pi"
 )
 
 func Adapters() []harness.Adapter {
-	return []harness.Adapter{pi.New(), claude.New(), codex.New()}
+	return []harness.Adapter{pi.New(), claude.New(), codex.New(), omp.New()}
 }
 
 // Exporters lists targets whose native transcripts sesh can write. A target
 // is added only after its output is verified against the real harness.
 func Exporters() []harness.Exporter {
-	return []harness.Exporter{pi.New(), codex.New(), claude.New()}
+	return []harness.Exporter{pi.New(), codex.New(), claude.New(), omp.New()}
 }
 
 func Find(name string) (harness.Adapter, error) {
@@ -35,7 +36,7 @@ func FindExporter(name string) (harness.Exporter, error) {
 			return exporter, nil
 		}
 	}
-	return nil, fmt.Errorf("unsupported target %q; supported: pi, codex, claude", name)
+	return nil, fmt.Errorf("unsupported target %q; supported: pi, codex, claude, omp", name)
 }
 
 func Detect(path string) (harness.Adapter, error) {
@@ -44,5 +45,5 @@ func Detect(path string) (harness.Adapter, error) {
 			return adapter, nil
 		}
 	}
-	return nil, fmt.Errorf("could not detect harness for %q; use --harness", path)
+	return nil, fmt.Errorf("could not detect harness for %q; use --from", path)
 }

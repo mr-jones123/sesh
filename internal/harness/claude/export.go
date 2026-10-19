@@ -17,25 +17,25 @@ import (
 	"github.com/mr-jones123/sesh/internal/turns"
 )
 
-// Export writes bundle as a Claude Code session: one JSONL record per
+// Export writes a session as a Claude Code session: one JSONL record per
 // message, chained by parentUuid. Shell, read, write, and edit calls become
 // Bash, Read, Write, and Edit; an edit with several replacements becomes one
 // Edit call per replacement, each answered with the recorded result. Other
 // tools are kept as text. Reasoning is dropped: Claude thinking blocks carry
 // Anthropic signatures that cannot be produced for another model's output.
-func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.ExportOptions, w io.Writer) error {
+func (Adapter) Export(ctx context.Context, source session.Session, opts harness.ExportOptions, w io.Writer) error {
 	if opts.SessionID == "" || opts.CreatedAt.IsZero() {
 		return fmt.Errorf("claude export needs a session ID and creation time")
 	}
 	out := bufio.NewWriter(w)
 	e := &writer{
 		enc:       json.NewEncoder(out),
-		source:    bundle.Session.Harness,
+		source:    source.Harness,
 		sessionID: opts.SessionID,
-		workspace: workspace(bundle, opts),
+		workspace: workspace(source, opts),
 	}
 	e.enc.SetEscapeHTML(false)
-	for _, turn := range turns.Build(bundle.Session, supported) {
+	for _, turn := range turns.Build(source, supported) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -50,20 +50,16 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 // InstallPath places the session where `claude --resume` looks for it:
 // projects/<workspace with every non-alphanumeric replaced by '-'>/<id>.jsonl
 // under $CLAUDE_CONFIG_DIR (default ~/.claude).
-func (Adapter) InstallPath(bundle session.Bundle, opts harness.ExportOptions) (string, error) {
+func (Adapter) InstallPath(source session.Session, opts harness.ExportOptions) (string, error) {
 	home, err := claudeHome()
 	if err != nil {
 		return "", err
 	}
-	dir := workspace(bundle, opts)
+	dir := workspace(source, opts)
 	if !filepath.IsAbs(dir) {
-		return "", fmt.Errorf("claude sessions need an absolute workspace; got %q (use -workspace)", dir)
+		return "", fmt.Errorf("claude sessions need an absolute workspace; got %q (use --workspace)", dir)
 	}
 	return filepath.Join(home, "projects", projectSlug(dir), opts.SessionID+".jsonl"), nil
-}
-
-func (Adapter) ResumeCommand(bundle session.Bundle, opts harness.ExportOptions) string {
-	return fmt.Sprintf("cd %s && claude --resume %s", tools.ShellQuote(workspace(bundle, opts)), opts.SessionID)
 }
 
 var nonAlphanumeric = regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -76,10 +72,10 @@ func projectSlug(dir string) string {
 // workspace is the target working directory. Claude files sessions under
 // the resolved path of its cwd (/tmp is /private/tmp on macOS), so an
 // existing directory is resolved the same way.
-func workspace(bundle session.Bundle, opts harness.ExportOptions) string {
+func workspace(source session.Session, opts harness.ExportOptions) string {
 	dir := opts.Workspace
 	if dir == "" {
-		dir = bundle.Session.Workspace
+		dir = source.Workspace
 	}
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		return resolved

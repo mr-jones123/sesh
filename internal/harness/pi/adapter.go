@@ -29,6 +29,9 @@ type entry struct {
 	Timestamp string   `json:"timestamp"`
 	CWD       string   `json:"cwd"`     // session header
 	Summary   string   `json:"summary"` // compaction, branch_summary
+	Title     string   `json:"title"`
+	Name      string   `json:"name"`
+	Source    string   `json:"source"`
 	Message   *message `json:"message"` // message
 }
 
@@ -50,34 +53,39 @@ type block struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) {
-	bundle := session.Bundle{Session: session.Session{Harness: "pi"}}
-	s := &bundle.Session
+func (Adapter) Import(ctx context.Context, path string) (session.Session, error) {
+	s := session.Session{Harness: "pi"}
 	// One Pi entry with N blocks becomes N events, but later entries point at
 	// the entry ID. Remember which event ended each entry.
 	lastEvent := map[string]string{}
+	headerSeen := false
+	var titles nativeTitles
 
 	err := jsonl.Read(ctx, path, func(line jsonl.Line) error {
-		bundle.RawRecords = append(bundle.RawRecords, session.RawLine{Line: line.Number, Record: string(line.Raw)})
-
 		var e entry
 		if err := json.Unmarshal(line.Raw, &e); err != nil {
 			return fmt.Errorf("decode entry: %w", err)
 		}
-		if len(bundle.RawRecords) == 1 {
+		if !headerSeen {
+			if line.Number == 1 && e.Type == "title" {
+				titles.set(e.Title, titleSlot)
+				return nil
+			}
+			headerSeen = true
 			if e.Type != "session" {
 				return fmt.Errorf("expected session header, found %q", e.Type)
 			}
 			s.ID, s.Workspace = e.ID, e.CWD
 			s.CreatedAt = harness.ParseTime(e.Timestamp)
+			titles.set(firstNonEmpty(e.Title, e.Name), titleHeader)
 			return nil
 		}
+		titles.observe(e)
 
 		base := session.Event{
 			ID:        e.ID,
 			ParentID:  lastEvent[e.ParentID],
 			CreatedAt: harness.ParseTime(e.Timestamp),
-			RawLine:   line.Number,
 		}
 		var events []session.Event
 		switch e.Type {
@@ -92,8 +100,8 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 			base.Type, base.Text = session.EventSummary, e.Summary
 			events = []session.Event{base}
 		}
-		// Entries outside the timeline (model_change, custom, ...) stay in
-		// RawRecords; their children attach to the nearest timeline ancestor.
+		// Entries outside the timeline (model_change, custom, ...) attach
+		// their children to the nearest timeline ancestor.
 		if len(events) > 0 {
 			lastEvent[e.ID] = events[len(events)-1].ID
 		} else {
@@ -103,12 +111,136 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 		return nil
 	})
 	if err != nil {
-		return session.Bundle{}, err
+		return session.Session{}, err
+	}
+	s.Title = titles.value
+	if !headerSeen || s.ID == "" {
+		return session.Session{}, fmt.Errorf("session header not found")
 	}
 	if s.CreatedAt.IsZero() {
 		s.CreatedAt = harness.FileTime(path)
 	}
-	return bundle, nil
+	return s, nil
+}
+
+func (Adapter) Summarize(ctx context.Context, path string) (harness.Summary, error) {
+	var summary harness.Summary
+	headerSeen := false
+	err := jsonl.ReadUntil(ctx, path, func(line jsonl.Line) (bool, error) {
+		var e entry
+		if err := json.Unmarshal(line.Raw, &e); err != nil {
+			return false, fmt.Errorf("decode entry: %w", err)
+		}
+		if !headerSeen {
+			if line.Number == 1 && e.Type == "title" {
+				return false, nil
+			}
+			headerSeen = true
+			if e.Type != "session" {
+				return false, fmt.Errorf("expected session header, found %q", e.Type)
+			}
+			summary.ID, summary.Workspace = e.ID, e.CWD
+			return false, nil
+		}
+		if summary.Prompt == "" && e.Type == "message" && e.Message != nil &&
+			e.Message.Role == string(session.RoleUser) {
+			blocks, err := decodeContent(e.Message.Content)
+			if err != nil {
+				return false, err
+			}
+			summary.Prompt = harness.Prompt(joinText(blocks))
+		}
+		return summary.ID != "" && summary.Workspace != "" && summary.Prompt != "", nil
+	})
+	if err != nil {
+		return harness.Summary{}, err
+	}
+	scanned, err := scanTitle(ctx, path)
+	if err != nil {
+		return harness.Summary{}, err
+	}
+	summary.Title = scanned
+	if !headerSeen || summary.ID == "" {
+		return harness.Summary{}, fmt.Errorf("session header not found")
+	}
+	return summary, nil
+}
+
+const (
+	titleHeader = iota + 1
+	titleInfo
+	titleGenerated
+	titleManual
+	titleSlot
+)
+
+type nativeTitles struct {
+	value    string
+	priority int
+}
+
+func (t *nativeTitles) set(value string, priority int) {
+	if priority < t.priority {
+		return
+	}
+	t.value = strings.TrimSpace(value)
+	t.priority = priority
+}
+
+func (t *nativeTitles) observe(e entry) {
+	switch e.Type {
+	case "session_info":
+		t.set(e.Name, titleInfo)
+	case "title":
+		priority := titleGenerated
+		switch e.Source {
+		case "user", "manual", "custom":
+			priority = titleManual
+		}
+		t.set(e.Title, priority)
+	}
+}
+
+func scanTitle(ctx context.Context, path string) (string, error) {
+	var titles nativeTitles
+	err := jsonl.ScanMetadata(ctx, path, func(line jsonl.MetadataLine) error {
+		kind, _ := jsonl.StringField(line.Prefix, "type")
+		switch kind {
+		case "session":
+			title, _ := jsonl.StringField(line.Prefix, "title")
+			if title == "" {
+				title, _ = jsonl.StringField(line.Prefix, "name")
+			}
+			titles.set(title, titleHeader)
+		case "session_info":
+			name, _ := jsonl.StringField(line.Prefix, "name")
+			titles.set(name, titleInfo)
+		case "title":
+			title, _ := jsonl.StringField(line.Prefix, "title")
+			if line.Number == 1 {
+				titles.set(title, titleSlot)
+				break
+			}
+			source, _ := jsonl.StringField(line.Prefix, "source")
+			priority := titleGenerated
+			switch source {
+			case "user", "manual", "custom":
+				priority = titleManual
+			}
+			titles.set(title, priority)
+		}
+		return nil
+	})
+	return titles.value, err
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func messageEvents(base session.Event, m message) ([]session.Event, error) {
@@ -146,7 +278,7 @@ func messageEvents(base session.Event, m message) ([]session.Event, error) {
 			event.Type = session.EventToolCall
 			event.Call = &session.ToolCall{ID: b.ID, Name: b.Name, Args: b.Arguments}
 		default:
-			continue // Images are kept in RawRecords until assets are supported.
+			continue // Images are not represented in the neutral session.
 		}
 		events = append(events, event)
 	}

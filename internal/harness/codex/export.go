@@ -21,22 +21,22 @@ import (
 // own external-session importer does.
 const importTurn = "sesh-import-turn-1"
 
-// Export writes bundle as a Codex rollout. The rollout's response items are
-// what Codex sends the model on resume; the event_msg items are what its UI
-// shows. Shell calls become exec_command and file writes/edits become
+// Export writes a session as a Codex rollout. The rollout's response items
+// are what Codex sends the model on resume; the event_msg items are what its
+// UI shows. Shell calls become exec_command and file writes/edits become
 // apply_patch; reads (Codex has no read tool) and other tools are kept as
 // text. Reasoning from the source model is dropped: Codex reasoning is
 // encrypted per provider and cannot be forged.
-func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.ExportOptions, w io.Writer) error {
+func (Adapter) Export(ctx context.Context, source session.Session, opts harness.ExportOptions, w io.Writer) error {
 	if opts.SessionID == "" || opts.CreatedAt.IsZero() {
 		return fmt.Errorf("codex export needs a session ID and creation time")
 	}
 	workspace := opts.Workspace
 	if workspace == "" {
-		workspace = bundle.Session.Workspace
+		workspace = source.Workspace
 	}
 	out := bufio.NewWriter(w)
-	e := &writer{enc: json.NewEncoder(out), source: bundle.Session.Harness, thread: opts.SessionID}
+	e := &writer{enc: json.NewEncoder(out), source: source.Harness, thread: opts.SessionID}
 	e.enc.SetEscapeHTML(false)
 
 	e.line(opts.CreatedAt, "session_meta", sessionMetaOut{
@@ -50,7 +50,7 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 	})
 	e.line(opts.CreatedAt, "event_msg", taskEvent{Type: "task_started", TurnID: importTurn})
 	var last string
-	for _, turn := range turns.Build(bundle.Session, supported) {
+	for _, turn := range turns.Build(source, supported) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 
 // InstallPath places the rollout where Codex looks for it: Codex finds a
 // session by the ID in the file name and registers it on first resume.
-func (Adapter) InstallPath(_ session.Bundle, opts harness.ExportOptions) (string, error) {
+func (Adapter) InstallPath(_ session.Session, opts harness.ExportOptions) (string, error) {
 	home, err := codexHome()
 	if err != nil {
 		return "", err
@@ -75,14 +75,6 @@ func (Adapter) InstallPath(_ session.Bundle, opts harness.ExportOptions) (string
 	local := opts.CreatedAt.Local()
 	name := fmt.Sprintf("rollout-%s-%s.jsonl", local.Format("2006-01-02T15-04-05"), opts.SessionID)
 	return filepath.Join(home, "sessions", local.Format("2006"), local.Format("01"), local.Format("02"), name), nil
-}
-
-func (Adapter) ResumeCommand(bundle session.Bundle, opts harness.ExportOptions) string {
-	workspace := opts.Workspace
-	if workspace == "" {
-		workspace = bundle.Session.Workspace
-	}
-	return fmt.Sprintf("cd %s && codex resume %s", tools.ShellQuote(workspace), opts.SessionID)
 }
 
 func supported(action tools.Action) bool {

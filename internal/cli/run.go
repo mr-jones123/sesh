@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"strings"
 )
 
 // Version is the release this binary was built from. It is empty unless set
@@ -36,8 +37,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	if len(args) == 0 {
-		printRootUsage(stdout)
-		return nil
+		return runPicker(ctx, args, stdin, stdout, stderr)
 	}
 
 	switch args[0] {
@@ -49,17 +49,14 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		fmt.Fprintln(stdout, version())
 		return nil
-	case "inspect":
-		return runInspect(ctx, args[1:], stdout, stderr)
-	case "export":
-		return runExport(ctx, args[1:], stdout, stderr)
+	case "handoff":
+		return runHandoff(ctx, args[1:], stdin, stdout, stderr)
 	case "list":
 		return runList(ctx, args[1:], stdout, stderr)
-	case "import":
-		return runImport(ctx, args[1:], stdout, stderr)
-	case "convert":
-		return runConvert(ctx, args[1:], stdin, stdout, stderr)
 	default:
+		if strings.HasPrefix(args[0], "-") {
+			return runPicker(ctx, args, stdin, stdout, stderr)
+		}
 		printRootUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -75,16 +72,10 @@ func runHelp(args []string, stdout io.Writer) error {
 	}
 
 	switch args[0] {
-	case "inspect":
-		printInspectUsage(stdout)
-	case "export":
-		printExportUsage(stdout)
 	case "list":
 		printListUsage(stdout)
-	case "import":
-		printImportUsage(stdout)
-	case "convert":
-		printConvertUsage(stdout)
+	case "handoff":
+		printHandoffUsage(stdout)
 	case "version":
 		fmt.Fprintln(stdout, "Usage: sesh version")
 	default:
@@ -95,20 +86,23 @@ func runHelp(args []string, stdout io.Writer) error {
 }
 
 func printRootUsage(w io.Writer) {
-	fmt.Fprint(w, `sesh shares and forks AI coding sessions.
+	fmt.Fprint(w, `sesh hands local AI coding sessions between Claude Code, Codex, Pi, and OMP.
 
 Usage:
-  sesh <command> [options]
+  sesh                         Browse this project's sessions
+  sesh --all                   Browse sessions across all projects
+  sesh --dir path              Browse another project
+  sesh --from claude|codex|pi|omp   Filter the session picker
+  sesh handoff [ID|path] --to claude|codex|pi|omp [options]
 
 Commands:
-  list      List the sessions recorded for this directory
-  export    Convert a harness transcript to a .sesh.json bundle
-  import    Read and validate a .sesh.json bundle
-  convert   Write a bundle as another harness's native session
-  inspect   Check that a file contains valid JSON
+  list      List sessions (use --all for every project)
+  handoff   Write a native session and resume the target agent
   version   Print the build version
   help      Show command help
 
-Run "sesh help <command>" for command-specific help.
+The picker requires a terminal. For agents/scripts, use handoff --no-run.
+History is local and unredacted; this is not a sanitized sharing tool.
+Run "sesh help handoff" or "sesh help list" for options.
 `)
 }

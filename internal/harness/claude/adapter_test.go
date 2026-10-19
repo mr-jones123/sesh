@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mr-jones123/sesh/internal/session"
@@ -22,13 +23,12 @@ func TestImportLinksToolResultsAndSkipsNoise(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bundle, err := New().Import(context.Background(), path)
+	s, err := New().Import(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := bundle.Session
-	if s.ID != "claude-1" || s.Workspace != "/work/app" || len(bundle.RawRecords) != 6 {
-		t.Fatalf("session = %#v, raw = %d", s, len(bundle.RawRecords))
+	if s.ID != "claude-1" || s.Workspace != "/work/app" {
+		t.Fatalf("session = %#v", s)
 	}
 	if len(s.Events) != 4 {
 		t.Fatalf("events = %#v, want 4", s.Events)
@@ -58,11 +58,11 @@ func TestImportMarksCompactSummary(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := New().Import(context.Background(), path)
+	s, err := New().Import(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := bundle.Session.Events; len(got) != 1 || got[0].Type != session.EventSummary || got[0].Text != "Summary of earlier work" {
+	if got := s.Events; len(got) != 1 || got[0].Type != session.EventSummary || got[0].Text != "Summary of earlier work" {
 		t.Fatalf("events = %#v", got)
 	}
 }
@@ -75,11 +75,11 @@ func TestImportKeepsSubagentTranscriptThread(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := New().Import(context.Background(), path)
+	s, err := New().Import(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := bundle.Session.Events; len(got) != 2 || got[1].ParentID != got[0].ID {
+	if got := s.Events; len(got) != 2 || got[1].ParentID != got[0].ID {
 		t.Fatalf("events = %#v", got)
 	}
 }
@@ -96,15 +96,96 @@ func TestImportChainsParallelToolResults(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := New().Import(context.Background(), path)
+	s, err := New().Import(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// One linear chain, so the last event's ancestry reaches both results.
-	events := bundle.Session.Events
+	events := s.Events
 	for i := 1; i < len(events); i++ {
 		if events[i].ParentID != events[i-1].ID {
 			t.Fatalf("event %d (%s) parent = %q, want %q", i, events[i].Type, events[i].ParentID, events[i-1].ID)
 		}
+	}
+}
+
+func TestSummarizeSkipsInjectedPromptAndStopsAfterFirstRealPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	data := `{"type":"user","uuid":"m1","sessionId":"claude-1","cwd":"/work/app","isMeta":true,"message":{"role":"user","content":"<system-reminder>injected</system-reminder>"}}
+{"type":"user","uuid":"s1","sessionId":"claude-1","cwd":"/work/app","isCompactSummary":true,"message":{"role":"user","content":"Earlier work"}}
+{"type":"user","uuid":"u1","sessionId":"claude-1","cwd":"/work/app","message":{"role":"user","content":"  Fix\n   the tests  "}}
+{invalid after prompt
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New().Summarize(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "claude-1" || got.Workspace != "/work/app" || got.Prompt != "Fix the tests" {
+		t.Fatalf("summary = %#v", got)
+	}
+}
+
+func TestSummarizeWithoutPromptReturnsMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	data := `{"type":"attachment","sessionId":"claude-empty","cwd":"/work/empty"}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New().Summarize(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "claude-empty" || got.Workspace != "/work/empty" || got.Prompt != "" {
+		t.Fatalf("summary = %#v", got)
+	}
+}
+
+func TestNativeTitlePrecedenceAndAppendedRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	data := `{"type":"ai-title","aiTitle":"Generated first","sessionId":"claude-title"}
+{"type":"user","uuid":"u1","sessionId":"claude-title","cwd":"/work/app","message":{"role":"user","content":"Original prompt"}}
+{malformed unrelated tail
+{"type":"custom-title","customTitle":"Manual rename","sessionId":"claude-title"}
+{"type":"ai-title","aiTitle":"Later generated name","sessionId":"claude-title"}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := New().Summarize(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Manual rename" || got.Prompt != "Original prompt" {
+		t.Fatalf("summary = %#v", got)
+	}
+
+	valid := strings.Replace(data, "{malformed unrelated tail\n", "", 1)
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imported, err := New().Import(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Title != "Manual rename" {
+		t.Fatalf("import title = %q", imported.Title)
+	}
+}
+
+func TestSummarizePreservesErrorsBeforePrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	data := `{"type":"ai-title","aiTitle":"Name","sessionId":"claude-title"}
+{malformed before prompt
+{"type":"user","uuid":"u1","sessionId":"claude-title","cwd":"/work/app","message":{"role":"user","content":"Prompt"}}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New().Summarize(context.Background(), path); err == nil {
+		t.Fatal("Summarize ignored malformed data before the first prompt")
 	}
 }

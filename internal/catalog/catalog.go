@@ -12,11 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/mr-jones123/sesh/internal/harness"
 	"github.com/mr-jones123/sesh/internal/registry"
-	"github.com/mr-jones123/sesh/internal/session"
 )
 
 // Entry is one recorded session.
@@ -24,11 +22,11 @@ type Entry struct {
 	Harness   string
 	Path      string
 	ID        string
+	Title     string
 	Workspace string
 	Updated   time.Time // the transcript's modification time
 	Prompt    string    // the first message the user typed, on one line
-	Events    int
-	Err       error // set when the transcript could not be imported
+	Err       error     // set when the transcript could not be summarized
 }
 
 // Query selects sessions. Zero values select everything.
@@ -38,7 +36,7 @@ type Query struct {
 }
 
 // List returns the sessions matching q, most recently updated first. Each
-// candidate is imported to read its workspace and first prompt.
+// candidate is summarized without importing its event history.
 func List(ctx context.Context, q Query) ([]Entry, error) {
 	files, err := locate(q)
 	if err != nil {
@@ -92,7 +90,7 @@ func Find(id, harnessName string) (Entry, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return Entry{}, fmt.Errorf("no session with ID %q; run sesh list -all", id)
+		return Entry{}, fmt.Errorf("no session with ID %q; run sesh list --all", id)
 	case 1:
 		return Entry{Harness: matches[0].harness, Path: matches[0].Path, ID: matches[0].ID}, nil
 	}
@@ -110,6 +108,7 @@ func Find(id, harnessName string) (Entry, error) {
 type located struct {
 	harness.SessionFile
 	harness string
+	adapter harness.Adapter
 }
 
 func locate(q Query) ([]located, error) {
@@ -124,62 +123,29 @@ func locate(q Query) ([]located, error) {
 			return nil, fmt.Errorf("find %s sessions: %w", adapter.Name(), err)
 		}
 		for _, f := range found {
-			files = append(files, located{SessionFile: f, harness: adapter.Name()})
+			files = append(files, located{SessionFile: f, harness: adapter.Name(), adapter: adapter})
 		}
 	}
 	return files, nil
 }
 
 func read(ctx context.Context, f located) Entry {
-	entry := Entry{Harness: f.harness, Path: f.Path, ID: f.ID}
+	entry := Entry{Harness: f.harness, Path: f.Path, ID: f.ID, Title: f.Title}
 	if info, err := os.Stat(f.Path); err == nil {
 		entry.Updated = info.ModTime()
 	}
-	adapter, err := registry.Find(f.harness)
+	summary, err := f.adapter.Summarize(ctx, f.Path)
 	if err != nil {
 		entry.Err = err
 		return entry
 	}
-	bundle, err := adapter.Import(ctx, f.Path)
-	if err != nil {
-		entry.Err = err
-		return entry
+	if entry.ID == "" {
+		entry.ID = summary.ID
 	}
-	entry.Workspace = bundle.Session.Workspace
-	entry.Events = len(bundle.Session.Events)
-	entry.Prompt = FirstPrompt(bundle.Session.Events)
+	if entry.Title == "" {
+		entry.Title = summary.Title
+	}
+	entry.Workspace = summary.Workspace
+	entry.Prompt = summary.Prompt
 	return entry
-}
-
-// injected are prefixes of user messages the harness or sesh wrote, not the
-// user: Codex's environment and AGENTS.md context, Claude's slash-command
-// and interruption records, skill bodies, and sesh's own markers.
-var injected = []string{
-	"<",
-	"# AGENTS.md instructions",
-	"[Request interrupted",
-	"Caveat: The messages below",
-	"The conversation before this point was summarized",
-	"[Imported by sesh",
-}
-
-// codexRequest heads the typed text in a Codex message that mentions files.
-const codexRequest = "## My request for Codex:"
-
-// FirstPrompt is the first user message that the user typed, on one line.
-func FirstPrompt(events []session.Event) string {
-	for _, e := range events {
-		if e.Type != session.EventMessage || e.Role != session.RoleUser {
-			continue
-		}
-		text := strings.TrimSpace(e.Text)
-		if _, request, ok := strings.Cut(text, codexRequest); ok {
-			text = strings.TrimSpace(request)
-		}
-		if text == "" || slices.ContainsFunc(injected, func(p string) bool { return strings.HasPrefix(text, p) }) {
-			continue
-		}
-		return strings.Join(strings.FieldsFunc(text, unicode.IsSpace), " ")
-	}
-	return ""
 }

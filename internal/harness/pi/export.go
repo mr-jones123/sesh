@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,39 +21,43 @@ import (
 // drops provider signatures before sending history to the resumed model.
 const importedProvider = "sesh"
 
-// Export writes bundle as a Pi session (format version 3). An unredacted Pi
-// bundle with no overrides is copied back byte-for-byte; every other bundle
-// is rebuilt from its turns along the active branch. A redacted bundle's raw
-// lines hold ~ in place of the home directory, so they are not reused.
-func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.ExportOptions, w io.Writer) error {
+// Export writes a session as a Pi session (format version 3), rebuilt from
+// the active branch of the neutral event history.
+func (Adapter) Export(ctx context.Context, source session.Session, opts harness.ExportOptions, w io.Writer) error {
+	return ExportCompatible(ctx, source, opts, w, supported)
+}
+
+// ExportCompatible writes the shared Pi-family grammar with a target's native
+// tool policy. The policy must only admit actions representable by piTool.
+func ExportCompatible(ctx context.Context, source session.Session, opts harness.ExportOptions, w io.Writer, supports func(tools.Action) bool) error {
 	provider, modelID, err := splitModel(opts.Model)
 	if err != nil {
 		return err
 	}
 	out := bufio.NewWriter(w)
-	if bundle.Session.Harness == "pi" && !bundle.Redacted && opts.Model == "" && opts.Workspace == "" && len(bundle.RawRecords) > 0 {
-		for _, raw := range bundle.RawRecords {
-			if _, err := out.WriteString(raw.Record + "\n"); err != nil {
-				return err
-			}
-		}
-		return out.Flush()
+	start := opts.CreatedAt
+	if start.IsZero() {
+		start = source.CreatedAt
 	}
-
-	e := &writer{enc: json.NewEncoder(out), source: bundle.Session.Harness, start: bundle.Session.CreatedAt}
+	e := &writer{enc: json.NewEncoder(out), source: source.Harness, start: start}
 	e.enc.SetEscapeHTML(false)
 	workspace := opts.Workspace
 	if workspace == "" {
-		workspace = bundle.Session.Workspace
+		workspace = source.Workspace
+	}
+	sessionID := opts.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("sesh-%s-%s", source.Harness, source.ID)
 	}
 	e.write(header{
 		Type:      "session",
 		Version:   3,
-		ID:        fmt.Sprintf("sesh-%s-%s", bundle.Session.Harness, bundle.Session.ID),
+		ID:        sessionID,
 		Timestamp: timestamp(e.start),
 		CWD:       workspace,
+		Title:     source.Title,
 	})
-	for _, turn := range turns.Build(bundle.Session, supported) {
+	for _, turn := range turns.Build(source, supports) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -66,6 +71,31 @@ func (Adapter) Export(ctx context.Context, bundle session.Bundle, opts harness.E
 		return e.err
 	}
 	return out.Flush()
+}
+
+// InstallPath places the session where Pi's session browser stores it.
+func (Adapter) InstallPath(source session.Session, opts harness.ExportOptions) (string, error) {
+	root, err := agentDir()
+	if err != nil {
+		return "", err
+	}
+	workspace := opts.Workspace
+	if workspace == "" {
+		workspace = source.Workspace
+	}
+	if !filepath.IsAbs(workspace) {
+		return "", fmt.Errorf("pi sessions need an absolute workspace; got %q (use --workspace)", workspace)
+	}
+	created := opts.CreatedAt
+	if created.IsZero() {
+		created = source.CreatedAt
+	}
+	sessionID := opts.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("sesh-%s-%s", source.Harness, source.ID)
+	}
+	name := strings.NewReplacer(":", "-", ".", "-").Replace(timestamp(created)) + "_" + sessionID + ".jsonl"
+	return filepath.Join(root, "sessions", sessionDirName(workspace), name), nil
 }
 
 func splitModel(model string) (provider, id string, err error) {
@@ -201,7 +231,7 @@ func (e *writer) writeMessage(at time.Time, message any) {
 }
 
 // nextHead allocates the next entry, chained to the previous one. Entry IDs
-// are sequential, so converting the same bundle twice gives the same file.
+// are sequential, so exporting the same session twice gives the same file.
 func (e *writer) nextHead(kind string, at time.Time) entryHead {
 	e.nextID++
 	id := fmt.Sprintf("%08x", e.nextID)
@@ -231,6 +261,7 @@ type header struct {
 	ID        string `json:"id"`
 	Timestamp string `json:"timestamp"`
 	CWD       string `json:"cwd"`
+	Title     string `json:"title,omitempty"`
 }
 
 type entryHead struct {

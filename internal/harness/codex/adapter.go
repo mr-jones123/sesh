@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/mr-jones123/sesh/internal/harness"
@@ -11,9 +12,12 @@ import (
 	"github.com/mr-jones123/sesh/internal/session"
 )
 
-type Adapter struct{}
+type Adapter struct {
+	titles       map[string]string
+	titlesLoaded bool
+}
 
-func New() Adapter           { return Adapter{} }
+func New() *Adapter          { return &Adapter{} }
 func (Adapter) Name() string { return "codex" }
 func (Adapter) Detect(path string) bool {
 	return strings.HasSuffix(path, ".jsonl") && strings.Contains(strings.ReplaceAll(path, "\\\\", "/"), "/.codex/")
@@ -27,10 +31,13 @@ type line struct {
 }
 
 type sessionMeta struct {
-	ID        string       `json:"id"`
-	SessionID string       `json:"session_id"`
-	CWD       string       `json:"cwd"`
-	Meta      *sessionMeta `json:"meta"` // older rollouts nest the metadata
+	ID         string       `json:"id"`
+	SessionID  string       `json:"session_id"`
+	CWD        string       `json:"cwd"`
+	Title      string       `json:"title"`
+	Name       string       `json:"name"`
+	ThreadName string       `json:"thread_name"`
+	Meta       *sessionMeta `json:"meta"` // older rollouts nest the metadata
 }
 
 type turnContext struct {
@@ -61,16 +68,13 @@ type contentItem struct {
 
 // Codex event_msg records mirror response items for its UI; they are skipped
 // so each message appears once.
-func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) {
-	bundle := session.Bundle{Session: session.Session{Harness: "codex"}}
-	s := &bundle.Session
+func (a *Adapter) Import(ctx context.Context, path string) (session.Session, error) {
+	s := session.Session{Harness: "codex"}
 	previous := ""                   // Codex rollouts are linear: each event follows the last.
 	model := ""                      // Set by turn_context, applies to later assistant items.
 	callNames := map[string]string{} // call_id -> tool name
 
 	err := jsonl.Read(ctx, path, func(raw jsonl.Line) error {
-		bundle.RawRecords = append(bundle.RawRecords, session.RawLine{Line: raw.Number, Record: string(raw.Raw)})
-
 		var l line
 		if err := json.Unmarshal(raw.Raw, &l); err != nil {
 			return fmt.Errorf("decode line: %w", err)
@@ -84,7 +88,6 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 			ID:        fmt.Sprintf("line-%d", raw.Number),
 			ParentID:  previous,
 			CreatedAt: created,
-			RawLine:   raw.Number,
 		}
 		keep := false
 		switch l.Type {
@@ -98,6 +101,7 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 			}
 			s.ID = firstNonEmpty(meta.SessionID, meta.ID)
 			s.Workspace = meta.CWD
+			s.Title = strings.TrimSpace(firstNonEmpty(meta.ThreadName, meta.Title, meta.Name))
 		case "turn_context":
 			var turn turnContext
 			if err := json.Unmarshal(l.Payload, &turn); err != nil {
@@ -128,15 +132,82 @@ func (Adapter) Import(ctx context.Context, path string) (session.Bundle, error) 
 		return nil
 	})
 	if err != nil {
-		return session.Bundle{}, err
+		return session.Session{}, err
 	}
 	if s.ID == "" {
-		return session.Bundle{}, fmt.Errorf("session metadata not found")
+		return session.Session{}, fmt.Errorf("session metadata not found")
+	}
+	if title := a.indexedTitle(path, s.ID); title != "" {
+		s.Title = title
 	}
 	if s.CreatedAt.IsZero() {
 		s.CreatedAt = harness.FileTime(path)
 	}
-	return bundle, nil
+	return s, nil
+}
+
+func (a *Adapter) Summarize(ctx context.Context, path string) (harness.Summary, error) {
+	var summary harness.Summary
+	err := jsonl.ReadUntil(ctx, path, func(raw jsonl.Line) (bool, error) {
+		var l line
+		if err := json.Unmarshal(raw.Raw, &l); err != nil {
+			return false, fmt.Errorf("decode line: %w", err)
+		}
+		switch l.Type {
+		case "session_meta":
+			var meta sessionMeta
+			if err := json.Unmarshal(l.Payload, &meta); err != nil {
+				return false, fmt.Errorf("decode session_meta: %w", err)
+			}
+			if meta.Meta != nil {
+				meta = *meta.Meta
+			}
+			summary.ID = firstNonEmpty(meta.SessionID, meta.ID)
+			summary.Workspace = meta.CWD
+			summary.Title = strings.TrimSpace(firstNonEmpty(meta.ThreadName, meta.Title, meta.Name))
+		case "response_item":
+			if summary.Prompt != "" {
+				break
+			}
+			var it item
+			if err := json.Unmarshal(l.Payload, &it); err != nil {
+				return false, fmt.Errorf("decode response_item: %w", err)
+			}
+			if it.Type == "message" && role(it.Role) == session.RoleUser {
+				summary.Prompt = harness.Prompt(joinText(it.Content))
+			}
+		}
+		return summary.ID != "" && summary.Workspace != "" && summary.Prompt != "", nil
+	})
+	if err != nil {
+		return harness.Summary{}, err
+	}
+	if summary.ID == "" {
+		return harness.Summary{}, fmt.Errorf("session metadata not found")
+	}
+	if title := a.indexedTitle(path, summary.ID); title != "" {
+		summary.Title = title
+	}
+	return summary, nil
+}
+
+func (a *Adapter) indexedTitle(path, id string) string {
+	home, err := codexHome()
+	if err != nil {
+		return ""
+	}
+	relative, err := filepath.Rel(filepath.Join(home, "sessions"), path)
+	if err != nil || !filepath.IsLocal(relative) {
+		return ""
+	}
+	titles := a.titles
+	if !a.titlesLoaded {
+		titles, err = sessionTitles(home)
+		if err != nil {
+			return ""
+		}
+	}
+	return strings.TrimSpace(titles[id])
 }
 
 // responseItem fills event from it and reports whether the event belongs in

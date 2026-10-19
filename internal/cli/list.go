@@ -12,7 +12,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mr-jones123/sesh/internal/catalog"
+	"github.com/mr-jones123/sesh/internal/registry"
 )
 
 func runList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -20,7 +22,7 @@ func runList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	flags.SetOutput(stderr)
 	all := flags.Bool("all", false, "list sessions from every directory")
 	dir := flags.String("dir", "", "directory to list instead of the current one")
-	harnessName := flags.String("harness", "", "only pi, claude, or codex")
+	harnessName := flags.String("harness", "", "only pi, claude, codex, or omp")
 	limit := flags.Int("n", 20, "show at most this many sessions; 0 for all")
 	flags.Usage = func() { printListUsage(flags.Output()) }
 
@@ -36,6 +38,14 @@ func runList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if *all && *dir != "" {
 		return fmt.Errorf("-all and -dir are mutually exclusive")
+	}
+	if *harnessName != "" {
+		if _, err := registry.Find(*harnessName); err != nil {
+			return err
+		}
+	}
+	if *limit < 0 {
+		return fmt.Errorf("-n must be non-negative")
 	}
 
 	query := catalog.Query{Harness: *harnessName}
@@ -65,20 +75,24 @@ func runList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	now := time.Now()
 	table := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	if *all {
-		fmt.Fprintln(table, "HARNESS\tUPDATED\tID\tEVENTS\tWORKSPACE\tFIRST MESSAGE")
+		fmt.Fprintln(table, "HARNESS\tUPDATED\tID\tWORKSPACE\tSESSION")
 	} else {
-		fmt.Fprintln(table, "HARNESS\tUPDATED\tID\tEVENTS\tFIRST MESSAGE")
+		fmt.Fprintln(table, "HARNESS\tUPDATED\tID\tSESSION")
 	}
 	for _, e := range shown {
-		prompt := truncate(e.Prompt, 60)
+		name := e.Title
+		if strings.TrimSpace(name) == "" {
+			name = e.Prompt
+		}
+		name = truncate(safeText(name), 60)
 		if e.Err != nil {
-			prompt = "(could not read: " + truncate(e.Err.Error(), 50) + ")"
+			name = "(could not read: " + truncate(e.Err.Error(), 50) + ")"
 		}
-		fmt.Fprintf(table, "%s\t%s\t%s\t%d\t", e.Harness, ago(e.Updated, now), shortID(e.ID), e.Events)
+		fmt.Fprintf(table, "%s\t%s\t%s\t", e.Harness, ago(e.Updated, now), safeText(e.ID))
 		if *all {
-			fmt.Fprintf(table, "%s\t", displayPath(e.Workspace))
+			fmt.Fprintf(table, "%s\t", safeText(displayPath(e.Workspace)))
 		}
-		fmt.Fprintln(table, prompt)
+		fmt.Fprintln(table, safeText(name))
 	}
 	if err := table.Flush(); err != nil {
 		return err
@@ -86,7 +100,7 @@ func runList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if len(shown) < len(entries) {
 		fmt.Fprintf(stdout, "… %d older; use -n 0 to show all\n", len(entries)-len(shown))
 	}
-	fmt.Fprintln(stdout, "\nexport one with: sesh export <ID>   (or sesh export -last for the newest)")
+	fmt.Fprintln(stdout, "\nhandoff with: sesh handoff <ID> --to claude|codex|pi|omp")
 	return nil
 }
 
@@ -99,14 +113,6 @@ func listDir(dir string) (string, error) {
 		return wd, nil
 	}
 	return filepath.Abs(dir)
-}
-
-// shortID is enough of an ID to pass to sesh export.
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
 }
 
 func truncate(s string, max int) string {
@@ -158,20 +164,29 @@ func ago(t, now time.Time) string {
 	return t.Format("2006-01-02")
 }
 
+func safeText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < ' ' || r == 0x7f || r >= 0x80 && r <= 0x9f {
+			return ' '
+		}
+		return r
+	}, ansi.Strip(s))
+}
+
 func printListUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: sesh list [options]
 
-Lists the sessions Claude Code, Codex, and Pi recorded for the current
-directory, newest first, with the first message you typed in each. Pass an
-ID (or its first characters) to sesh export.
+Lists the sessions Claude Code, Codex, Pi, and OMP recorded for the current
+directory, newest first, with saved session names (first prompt if untitled).
+Pass an ID or unique prefix to sesh handoff <ID> --to <harness>.
 
-Sessions are read from ~/.claude (or $CLAUDE_CONFIG_DIR), ~/.codex (or
-$CODEX_HOME), and ~/.pi/agent (or $PI_CODING_AGENT_DIR).
+Stores: ~/.claude ($CLAUDE_CONFIG_DIR), ~/.codex ($CODEX_HOME),
+~/.pi/agent ($PI_CODING_AGENT_DIR), ~/.omp/agent ($SESH_OMP_AGENT_DIR).
 
 Options:
   -all           list sessions from every directory, with their workspace
   -dir path      list another directory instead of the current one
-  -harness name  only pi, claude, or codex
+  -harness name  only pi, claude, codex, or omp
   -n count       show at most count sessions (default 20; 0 for all)
 `)
 }

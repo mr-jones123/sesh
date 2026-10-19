@@ -1,6 +1,29 @@
 # Changelog
 
-All notable changes to sesh are listed here. Versions follow [Semantic Versioning](https://semver.org): until 1.0.0, a minor version may change commands, flags, or the bundle format.
+All notable changes to sesh are listed here. Versions follow [Semantic Versioning](https://semver.org): until 1.0.0, a minor version may change commands and flags.
+
+## Unreleased
+
+### Added
+- A Bubble Tea v2 session picker as the default terminal experience: project/all-project scope, search, session details, target selection, and explicit confirmation before writing.
+- `sesh --all`, `--dir`, and `--from` for scoped interactive browsing.
+- `sesh handoff [ID|path] --to claude|codex|pi|omp`: translate native history in memory, write a new target-native session, and resume in the recorded workspace.
+- `handoff --no-run` for agents/scripts, plus `--workspace` and Pi-only `--model` overrides. Flags may appear after the session ID/path.
+- Native Pi store installation, new session identities for every target, private exclusive writes, partial-file cleanup, and retained-session recovery instructions when launching fails.
+- Saved/generated session headings, searchable names, distinct Claude/Codex/Pi/OMP color badges, higher-contrast metadata, spaced rows, and theme-aware selection colors.
+- Native OMP discovery and handoff, including authoritative first-line titles, compact home-relative project paths, and valid fixed-width title slots. `SESH_OMP_AGENT_DIR` selects sesh's OMP root separately from Pi.
+
+### Changed
+- Session discovery reads metadata and the first genuine prompt rather than importing the entire event history. List output omits event counts and shows full, selectable IDs.
+- The CLI and TUI share the same handoff service and native translators. The TUI restores terminal input/output before launching a target and prevents confirmation when details do not fit.
+- Repository agent-skill instructions use local `handoff --no-run` rather than portable exports.
+- Native name discovery follows Claude manual/generated titles, Codex's session index, Pi saved-name records, and OMP title slots without importing full histories. Untitled sessions retain a first-prompt fallback.
+- OMP-specific edits, ranged reads, selectors, archive members, and unsupported tool options are preserved as text where their native semantics cannot be translated faithfully.
+
+### Removed
+- Portable `.sesh.json` bundles, raw-record archives, bundle codecs, and redaction. Local handoffs preserve sensitive content; resuming a target may send history to its configured provider.
+- The `export`, `import`, `convert`, and JSON `inspect` commands. Existing files are not deleted or migrated; use the original native transcript as the source.
+- Pi's byte-exact raw-copy path; same-harness handoffs now rebuild a new native session.
 
 ## [0.2.0] - 2026-09-27
 
