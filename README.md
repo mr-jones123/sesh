@@ -25,7 +25,7 @@ Published releases can be installed with:
 go install github.com/mr-jones123/sesh/cmd/sesh@latest
 ```
 
-An older published tag may still use the export/convert workflow. Use the checkout installation for these changes until they are released. `sesh version` reports a release/module version, or `dev` for an unversioned local build.
+Version v0.3.0 introduces the native handoff/TUI workflow; older tags use export/convert. `sesh version` reports a release/module version, or `dev` for an unversioned local build.
 
 ## Interactive picker
 
@@ -160,6 +160,15 @@ go vet ./...
 ```
 
 Releases and breaking changes are recorded in [CHANGELOG.md](CHANGELOG.md). Until 1.0.0, a minor version may change commands and flags.
+
+Versions come from Git tags, not commit messages. To release, run tests and vet, update the changelog with the version and date, commit the release notes, then create and push the tag:
+
+```sh
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin main v0.3.0
+```
+
+A Conventional Commit such as `feat!:` does not automatically create a release.
 
 ## License
 

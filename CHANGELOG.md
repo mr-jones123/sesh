@@ -2,7 +2,7 @@
 
 All notable changes to sesh are listed here. Versions follow [Semantic Versioning](https://semver.org): until 1.0.0, a minor version may change commands and flags.
 
-## Unreleased
+## [0.3.0] - 2026-10-21
 
 ### Added
 - A Bubble Tea v2 session picker as the default terminal experience: project/all-project scope, search, session details, target selection, and explicit confirmation before writing.
@@ -47,5 +47,6 @@ First public release.
 - Redaction on by default in `export`: known API key and token formats, URL passwords, upper-case env secrets, emails, and home directories (`/Users/<name>`, `/home/<name>`, `/root`) as `~`. `-no-redact` keeps a byte-exact bundle; `convert` turns `~` back into the current user's home.
 - Agent skill in `skills/sesh`, installable with `npx skills add mr-jones123/sesh --skill sesh`.
 
+[0.3.0]: https://github.com/mr-jones123/sesh/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mr-jones123/sesh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mr-jones123/sesh/releases/tag/v0.1.0
